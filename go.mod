@@ -1,4 +1,4 @@
-module github.com/last9/go-sdk/mcp
+module github.com/last9/mcp-go-sdk
 
 go 1.24.6
 
