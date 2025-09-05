@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -46,34 +45,6 @@ func mapServerTransport(transport mcp.Transport) string {
 		return "sse"
 	default:
 		return "stdio"
-	}
-}
-
-// parseArguments is a helper function to handle the any type of req.Params.Arguments
-// and unmarshal it into the provided struct
-func parseArguments(arguments any, target interface{}) error {
-	switch args := arguments.(type) {
-	case json.RawMessage:
-		// Arguments come as raw JSON bytes
-		return json.Unmarshal(args, target)
-	case map[string]interface{}:
-		// Arguments are already parsed into a map
-		// Convert back to JSON and unmarshal to get proper types
-		jsonBytes, err := json.Marshal(args)
-		if err != nil {
-			return fmt.Errorf("failed to marshal map to JSON: %w", err)
-		}
-		return json.Unmarshal(jsonBytes, target)
-	case nil:
-		// No arguments provided
-		return fmt.Errorf("no arguments provided")
-	default:
-		// Try to marshal and unmarshal as a fallback for any other type
-		jsonBytes, err := json.Marshal(args)
-		if err != nil {
-			return fmt.Errorf("failed to marshal arguments to JSON: %w", err)
-		}
-		return json.Unmarshal(jsonBytes, target)
 	}
 }
 
