@@ -190,9 +190,6 @@ func (w *OtelMCPWrapper) initMetrics() error {
 
 // RegisterInstrumentedTool registers a tool with OpenTelemetry instrumentation
 func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, handler mcp.ToolHandler) {
-	// Register the tool with the underlying server
-	// w.server.AddTool(&tool, handler)
-
 	// Wrap the handler with OpenTelemetry instrumentation
 	instrumentedHandler := w.instrumentHandler(name, handler)
 	w.server.AddTool(&tool, instrumentedHandler)
