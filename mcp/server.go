@@ -199,6 +199,7 @@ func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, ha
 func (w *OtelMCPWrapper) instrumentHandler(toolName string, originalHandler mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, mcpReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Start a new span for this tool call
+		ctx = context.Background()
 		ctx, span := w.tracer.Start(ctx, fmt.Sprintf("mcp.tool.%s", toolName),
 			trace.WithAttributes(
 				attribute.String("mcp.tool.name", toolName),
@@ -254,7 +255,14 @@ func (w *OtelMCPWrapper) instrumentHandler(toolName string, originalHandler mcp.
 				span.RecordError(err)
 				span.SetAttributes(attribute.String("mcp.error.message", err.Error()))
 			} else if result.IsError {
-				span.SetAttributes(attribute.String("mcp.error.message", "Tool returned error result"))
+				errMsg := "unknown error"
+				if len(result.Content) > 0 {
+					// Attempt to extract error message from result content
+					if msg, ok := result.Content[0].(*mcp.TextContent); ok {
+						errMsg = msg.Text
+					}
+				}
+				span.SetAttributes(attribute.String("mcp.error.message", string(errMsg)))
 			}
 		}
 
