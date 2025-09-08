@@ -24,7 +24,7 @@ import (
 
 // OtelMCPWrapper wraps an MCP server with OpenTelemetry instrumentation
 type OtelMCPWrapper struct {
-	server          *mcp.Server
+	Server          *mcp.Server
 	serverTransport string
 	tracer          trace.Tracer
 	meter           metric.Meter
@@ -92,7 +92,7 @@ func NewServerWithOtel(serverName, version string) (*OtelMCPWrapper, error) {
 		Version: version,
 	}
 	wrapper := &OtelMCPWrapper{
-		server: mcp.NewServer(&info, nil),
+		Server: mcp.NewServer(&info, nil),
 		tracer: tracer,
 		meter:  meter,
 	}
@@ -192,7 +192,7 @@ func (w *OtelMCPWrapper) initMetrics() error {
 func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, handler mcp.ToolHandler) {
 	// Wrap the handler with OpenTelemetry instrumentation
 	instrumentedHandler := w.instrumentHandler(name, handler)
-	w.server.AddTool(&tool, instrumentedHandler)
+	w.Server.AddTool(&tool, instrumentedHandler)
 }
 
 // instrumentHandler wraps a tool handler with OpenTelemetry tracing and metrics
@@ -301,7 +301,7 @@ func (w *OtelMCPWrapper) Serve(ctx context.Context, transport mcp.Transport) err
 	log.Println("🚀 Starting instrumented MCP server...")
 
 	w.serverTransport = mapServerTransport(transport)
-	err := w.server.Run(ctx, transport)
+	err := w.Server.Run(ctx, transport)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Server failed")
