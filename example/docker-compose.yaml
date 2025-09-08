@@ -7,6 +7,7 @@ services:
     command: --config /etc/otel/config.yaml
     environment:
       - JAEGER_ENDPOINT=jaeger:4317
+      - METRIC_ENDPOINT=${METRIC_ENDPOINT:-"http://localhost:4318/v1/metrics"}
     ports:
       - "13133:13133" # health_check extension
       - "55679:55679" # zpages extension
