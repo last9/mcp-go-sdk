@@ -195,16 +195,47 @@ func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, ha
 	w.Server.AddTool(&tool, instrumentedHandler)
 }
 
+func (w *OtelMCPWrapper) extractUserInfo(ctx context.Context, req *mcp.CallToolRequest) (userID, queryID string) {
+	// Option 1: Extract from context values
+	if uid := ctx.Value("user_id"); uid != nil {
+		if userID, ok := uid.(string); ok {
+			userID = userID
+		}
+	}
+
+	if qid := ctx.Value("query_id"); qid != nil {
+		if queryID, ok := qid.(string); ok {
+			queryID = queryID
+		}
+	}
+
+	// Option 2: Extract from request parameters
+	if req.Params.Arguments != nil {
+		var args map[string]interface{}
+		if err := parseArguments(req.Params.Arguments, &args); err == nil {
+			if uid, ok := args["_user_id"].(string); ok {
+				userID = uid
+			}
+			if qid, ok := args["_query_id"].(string); ok {
+				queryID = qid
+			}
+		}
+	}
+	return userID, queryID
+}
+
 // instrumentHandler wraps a tool handler with OpenTelemetry tracing and metrics
 func (w *OtelMCPWrapper) instrumentHandler(toolName string, originalHandler mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, mcpReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Start a new span for this tool call
-		ctx = context.Background()
+		userID, queryID := w.extractUserInfo(ctx, mcpReq)
+		// start a new trace for the tool call
 		ctx, span := w.tracer.Start(ctx, fmt.Sprintf("mcp.tool.%s", toolName),
 			trace.WithAttributes(
 				attribute.String("mcp.tool.name", toolName),
 				attribute.String("mcp.operation", "tool_call"),
 				attribute.String("mcp.server.transport", w.serverTransport),
+				attribute.String("mcp.user.id", userID),
+				attribute.String("mcp.query.id", queryID),
 			),
 		)
 		defer span.End()
