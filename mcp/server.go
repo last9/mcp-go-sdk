@@ -224,6 +224,8 @@ func (w *OtelMCPWrapper) instrumentHandler(toolName string, originalHandler mcp.
 
 		log.Printf("🔧 [OTel] Starting tool call: %s", toolName)
 
+		w.callCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+
 		// Call the original handler
 		result, err := originalHandler(ctx, mcpReq)
 
@@ -231,7 +233,6 @@ func (w *OtelMCPWrapper) instrumentHandler(toolName string, originalHandler mcp.
 		duration := time.Since(startTime)
 
 		// Record metrics
-		w.callCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
 		w.callDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(metricAttrs...))
 
 		// Handle errors and success
