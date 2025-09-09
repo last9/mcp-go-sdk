@@ -195,19 +195,38 @@ func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, ha
 	w.Server.AddTool(&tool, instrumentedHandler)
 }
 
+func (w *OtelMCPWrapper) requestStartMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		ctx, _ = w.tracer.Start(ctx, fmt.Sprintf("mcp.method.%s", method))
+		return next(ctx, method, req)
+	}
+}
+
+func (w *OtelMCPWrapper) requestEndMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		result, err := next(ctx, method, req)
+		span := trace.SpanFromContext(ctx)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "Method failed")
+			span.SetAttributes(attribute.String("mcp.method.status", "error"))
+			span.SetAttributes(attribute.String("mcp.error.message", err.Error()))
+		} else {
+			span.SetStatus(codes.Ok, "Method completed successfully")
+			span.SetAttributes(attribute.String("mcp.method.status", "success"))
+		}
+		span.End()
+		return result, err
+	}
+}
+
 // instrumentHandler wraps a tool handler with OpenTelemetry tracing and metrics
 func (w *OtelMCPWrapper) instrumentHandler(toolName string, originalHandler mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, mcpReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// start a new trace for the tool call
-		ctx, span := w.tracer.Start(ctx, fmt.Sprintf("mcp.tool.%s", toolName),
-			trace.WithAttributes(
-				attribute.String("mcp.tool.name", toolName),
-				attribute.String("mcp.operation", "tool_call"),
-				attribute.String("mcp.server.transport", w.serverTransport),
-			),
-		)
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("mcp.tool.name", toolName))
+		span.SetAttributes(attribute.String("mcp.server.transport", w.serverTransport))
 		defer span.End()
-
 		var p interface{}
 		err := parseArguments(mcpReq.Params.Arguments, &p)
 		// Add parameters to span (be careful not to log sensitive data)
@@ -297,24 +316,11 @@ func (w *OtelMCPWrapper) addParamsToSpan(span trace.Span, params interface{}) {
 
 // Serve starts the MCP server
 func (w *OtelMCPWrapper) Serve(ctx context.Context, transport mcp.Transport) error {
-	// Start a span for the server lifecycle
-	ctx, span := w.tracer.Start(ctx, "mcp.server.serve",
-		trace.WithAttributes(
-			attribute.String("mcp.operation", "serve"),
-		),
-	)
-	defer span.End()
-
 	log.Println("🚀 Starting instrumented MCP server...")
 
 	w.serverTransport = mapServerTransport(transport)
+	w.Server.AddReceivingMiddleware(w.requestStartMiddleware)
+	w.Server.AddSendingMiddleware(w.requestEndMiddleware)
 	err := w.Server.Run(ctx, transport)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "Server failed")
-	} else {
-		span.SetStatus(codes.Ok, "Server completed")
-	}
-
 	return err
 }
