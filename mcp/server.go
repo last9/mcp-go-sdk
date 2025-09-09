@@ -28,6 +28,7 @@ type OtelMCPWrapper struct {
 	serverTransport string
 	tracer          trace.Tracer
 	meter           metric.Meter
+	currentTrace    trace.Span
 
 	// Metrics instruments
 	callCounter  metric.Int64Counter
@@ -188,6 +189,27 @@ func (w *OtelMCPWrapper) initMetrics() error {
 	return nil
 }
 
+func (w *OtelMCPWrapper) isNewQuery(method string) bool {
+	queryMethods := []string{
+		"initialize",
+		"tools/list",
+		"resources/list",
+		"prompts/list",
+	}
+	for _, newQueryMethod := range queryMethods {
+		if method == newQueryMethod {
+			return true
+		}
+	}
+
+	// No active trace means new query
+	if w.currentTrace == nil {
+		return true
+	}
+
+	return false
+}
+
 // RegisterInstrumentedTool registers a tool with OpenTelemetry instrumentation
 func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, handler mcp.ToolHandler) {
 	// Wrap the handler with OpenTelemetry instrumentation
@@ -197,30 +219,38 @@ func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, ha
 
 func (w *OtelMCPWrapper) requestStartMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		startTrace := fmt.Sprintf("mcp.method.%s.start", method)
-		if ctr, ok := req.(*mcp.CallToolRequest); ok {
-			startTrace = ctr.Params.Name
-		}
-		ctx, _ = w.tracer.Start(ctx, startTrace)
-		return next(ctx, method, req)
-	}
-}
+		var newCtx context.Context
+		var span trace.Span
 
-func (w *OtelMCPWrapper) requestEndMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
-	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		result, err := next(ctx, method, req)
-		span := trace.SpanFromContext(ctx)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "Method failed")
-			span.SetAttributes(attribute.String("mcp.method.status", "error"))
-			span.SetAttributes(attribute.String("mcp.error.message", err.Error()))
-		} else {
-			span.SetStatus(codes.Ok, "Method completed successfully")
-			span.SetAttributes(attribute.String("mcp.method.status", "success"))
+		startTrace := fmt.Sprintf("mcp.request.%s.start", method)
+		if ctr, ok := req.(*mcp.CallToolRequest); ok {
+			startTrace = fmt.Sprintf("mcp.tool.%s.start", ctr.Params.Name)
 		}
-		span.End()
-		return result, err
+
+		if w.isNewQuery(method) {
+			if w.currentTrace != nil {
+				w.currentTrace.End()
+				w.currentTrace = nil
+			}
+
+			if method == "tools/list" {
+				newCtx, span = w.tracer.Start(ctx, startTrace)
+				w.currentTrace = span
+			}
+		} else {
+			ctx = trace.ContextWithSpan(ctx, w.currentTrace)
+			newCtx, span = w.tracer.Start(ctx, startTrace, trace.WithAttributes(
+				attribute.String("mcp.server.transport", w.serverTransport),
+			))
+		}
+
+		if span != nil {
+			defer span.End()
+		}
+
+		resp, err := next(newCtx, method, req)
+
+		return resp, err
 	}
 }
 
@@ -228,9 +258,8 @@ func (w *OtelMCPWrapper) requestEndMiddleware(next mcp.MethodHandler) mcp.Method
 func (w *OtelMCPWrapper) instrumentHandler(toolName string, originalHandler mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, mcpReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		span := trace.SpanFromContext(ctx)
-		span.SetAttributes(attribute.String("mcp.tool.name", toolName))
 		span.SetAttributes(attribute.String("mcp.server.transport", w.serverTransport))
-		defer span.End()
+
 		var p interface{}
 		err := parseArguments(mcpReq.Params.Arguments, &p)
 		// Add parameters to span (be careful not to log sensitive data)
@@ -324,7 +353,7 @@ func (w *OtelMCPWrapper) Serve(ctx context.Context, transport mcp.Transport) err
 
 	w.serverTransport = mapServerTransport(transport)
 	w.Server.AddReceivingMiddleware(w.requestStartMiddleware)
-	w.Server.AddSendingMiddleware(w.requestEndMiddleware)
+	// w.Server.AddSendingMiddleware(w.requestEndMiddleware)
 	err := w.Server.Run(ctx, transport)
 	return err
 }
