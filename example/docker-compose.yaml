@@ -6,7 +6,8 @@ services:
       - /tmp/otel-collector-config.yaml:/etc/otel/config.yaml
     command: --config /etc/otel/config.yaml
     environment:
-      - JAEGER_ENDPOINT=jaeger:4317
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-jaeger:4317}
+      - JAEGER_AUTH_TOKEN=${JAEGER_AUTH_TOKEN:-""}
       - METRIC_ENDPOINT=${METRIC_ENDPOINT:-"http://localhost:4318/v1/metrics"}
     ports:
       - "13133:13133" # health_check extension

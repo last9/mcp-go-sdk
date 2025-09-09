@@ -19,6 +19,8 @@ exporters:
     endpoint: "${JAEGER_ENDPOINT}"
     tls:
       insecure: true
+    headers:
+      Authorization: "Basic ${JAEGER_AUTH_TOKEN}"
   prometheusremotewrite:
     endpoint: "${METRIC_ENDPOINT}"
 
