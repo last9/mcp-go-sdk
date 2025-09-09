@@ -2,9 +2,9 @@ module example
 
 go 1.24.6
 
-require github.com/last9/mcp-go-sdk v0.0.0-20250908220543-c53f446497aa
+require github.com/last9/mcp-go-sdk v0.0.0-20250909134851-fd065e64ea1d
 
-replace github.com/last9/mcp-go-sdk v0.0.0-20250908220543-c53f446497aa => ../
+replace github.com/last9/mcp-go-sdk v0.0.0-20250909134851-fd065e64ea1d => ../
 
 require (
 	github.com/google/jsonschema-go v0.2.1
