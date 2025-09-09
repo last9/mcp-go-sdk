@@ -228,11 +228,6 @@ func (w *OtelMCPWrapper) requestStartMiddleware(next mcp.MethodHandler) mcp.Meth
 		}
 
 		if w.isNewQuery(method) {
-			if w.currentTrace != nil {
-				w.currentTrace.End()
-				w.currentTrace = nil
-			}
-
 			if method == "tools/list" {
 				newCtx, span = w.tracer.Start(ctx, startTrace)
 				w.currentTrace = span
