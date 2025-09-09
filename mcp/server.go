@@ -197,7 +197,11 @@ func (w *OtelMCPWrapper) RegisterInstrumentedTool(name string, tool mcp.Tool, ha
 
 func (w *OtelMCPWrapper) requestStartMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		ctx, _ = w.tracer.Start(ctx, fmt.Sprintf("mcp.method.%s", method))
+		startTrace := fmt.Sprintf("mcp.method.%s.start", method)
+		if ctr, ok := req.(*mcp.CallToolRequest); ok {
+			startTrace = ctr.Params.Name
+		}
+		ctx, _ = w.tracer.Start(ctx, startTrace)
 		return next(ctx, method, req)
 	}
 }
