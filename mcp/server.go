@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -33,52 +34,277 @@ type ClientInfo struct {
 	Capabilities mcp.ClientCapabilities
 }
 
-// HubManager manages multiple client hubs
-type HubManager struct {
-	hubs       map[string]*Hub // clientID -> Hub
-	mu         sync.RWMutex
-	currentHub *Hub // for stdio, there's only one hub
+// StoredTraceContext represents a stored trace context for cross-process propagation
+type StoredTraceContext struct {
+	SpanContext trace.SpanContext
+	QueryID     string
+	LastUsed    time.Time
+	IsActive    bool
 }
 
-type Hub struct {
-	ClientInfo   ClientInfo
-	currentTrace trace.Span
+// ClientSession manages trace contexts for a specific client
+type ClientSession struct {
+	ClientInfo    ClientInfo
+	ActiveQueries map[string]*StoredTraceContext // queryID -> context
+	LastActivity  time.Time
+	mu            sync.RWMutex
 }
 
+// QueryInfo contains extracted information about the user query
+type QueryInfo struct {
+	Content    string               // Actual query content if available
+	Attributes []attribute.KeyValue // Additional attributes from arguments
+}
+
+// SessionBasedTraceStore manages trace contexts for multiple clients
+type SessionBasedTraceStore struct {
+	sessions map[string]*ClientSession // clientID -> session
+	mu       sync.RWMutex
+	cleanup  *time.Ticker
+}
+
+// NewSessionBasedTraceStore creates a new trace store with automatic cleanup
+func NewSessionBasedTraceStore() *SessionBasedTraceStore {
+	store := &SessionBasedTraceStore{
+		sessions: make(map[string]*ClientSession),
+		cleanup:  time.NewTicker(5 * time.Minute),
+	}
+
+	// Background cleanup of stale sessions
+	go func() {
+		for range store.cleanup.C {
+			store.cleanupStaleSessions()
+		}
+	}()
+
+	return store
+}
+
+// StoreQueryContext stores a new query context for a client
+func (s *SessionBasedTraceStore) StoreQueryContext(clientID, queryID string, spanCtx trace.SpanContext) {
+	s.mu.RLock()
+	session, exists := s.sessions[clientID]
+	s.mu.RUnlock()
+
+	if !exists {
+		s.mu.Lock()
+		session = &ClientSession{
+			ActiveQueries: make(map[string]*StoredTraceContext),
+			LastActivity:  time.Now(),
+		}
+		s.sessions[clientID] = session
+		s.mu.Unlock()
+	}
+
+	session.mu.Lock()
+	session.ActiveQueries[queryID] = &StoredTraceContext{
+		SpanContext: spanCtx,
+		QueryID:     queryID,
+		LastUsed:    time.Now(),
+		IsActive:    true,
+	}
+	session.LastActivity = time.Now()
+	session.mu.Unlock()
+}
+
+// GetQueryContext retrieves the most recent active query context for a client
+func (s *SessionBasedTraceStore) GetQueryContext(clientID string) (trace.SpanContext, string, bool) {
+	s.mu.RLock()
+	session, exists := s.sessions[clientID]
+	s.mu.RUnlock()
+
+	if !exists {
+		return trace.SpanContext{}, "", false
+	}
+
+	session.mu.RLock()
+	defer session.mu.RUnlock()
+
+	// Find the most recent active query
+	var latestQuery *StoredTraceContext
+	var latestQueryID string
+
+	for queryID, query := range session.ActiveQueries {
+		if query.IsActive && (latestQuery == nil || query.LastUsed.After(latestQuery.LastUsed)) {
+			latestQuery = query
+			latestQueryID = queryID
+		}
+	}
+
+	if latestQuery != nil {
+		latestQuery.LastUsed = time.Now()
+		session.LastActivity = time.Now()
+		return latestQuery.SpanContext, latestQueryID, true
+	}
+
+	return trace.SpanContext{}, "", false
+}
+
+// EndQuery ends all active queries for a client
+func (s *SessionBasedTraceStore) EndQuery(clientID string) bool {
+	s.mu.RLock()
+	session, exists := s.sessions[clientID]
+	s.mu.RUnlock()
+
+	if !exists || len(session.ActiveQueries) == 0 {
+		return false
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	hasActiveQueries := false
+	for queryID, query := range session.ActiveQueries {
+		if query.IsActive {
+			query.IsActive = false
+			hasActiveQueries = true
+			delete(session.ActiveQueries, queryID)
+		}
+	}
+
+	if hasActiveQueries {
+		session.LastActivity = time.Now()
+	}
+
+	return hasActiveQueries
+}
+
+// GetClientInfo retrieves client information for a given clientID
+func (s *SessionBasedTraceStore) GetClientInfo(clientID string) (ClientInfo, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if session, exists := s.sessions[clientID]; exists {
+		return session.ClientInfo, true
+	}
+	return ClientInfo{}, false
+}
+
+// CreateSession creates a new session for a client
+func (s *SessionBasedTraceStore) CreateSession(clientID string, clientInfo ClientInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sessions[clientID] = &ClientSession{
+		ClientInfo:    clientInfo,
+		ActiveQueries: make(map[string]*StoredTraceContext),
+		LastActivity:  time.Now(),
+	}
+
+	log.Printf("🔄 Created new session for client %s (%s v%s)", clientID, clientInfo.Name, clientInfo.Version)
+}
+
+// forceCleanupClient immediately removes a client session
+func (s *SessionBasedTraceStore) forceCleanupClient(clientID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if session, exists := s.sessions[clientID]; exists {
+		session.mu.Lock()
+		for queryID, query := range session.ActiveQueries {
+			if query.IsActive {
+				query.IsActive = false
+				log.Printf("🧹 Force-ended query %s for disconnected client %s", queryID, clientID)
+			}
+		}
+		session.ActiveQueries = make(map[string]*StoredTraceContext)
+		session.mu.Unlock()
+
+		delete(s.sessions, clientID)
+		log.Printf("🧹 Force-removed session for disconnected client %s", clientID)
+	}
+}
+
+// GetAllClientIDs returns all active client IDs
+func (s *SessionBasedTraceStore) GetAllClientIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	clientIDs := make([]string, 0, len(s.sessions))
+	for clientID := range s.sessions {
+		clientIDs = append(clientIDs, clientID)
+	}
+	return clientIDs
+}
+
+// cleanupStaleSessions removes old inactive sessions with more aggressive timeouts
+func (s *SessionBasedTraceStore) cleanupStaleSessions() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+
+	// More aggressive cleanup tiers
+	staleCutoff := now.Add(-30 * time.Minute)         // 30 min for stale sessions
+	inactiveQueryCutoff := now.Add(-10 * time.Minute) // 10 min for inactive queries
+
+	for clientID, session := range s.sessions {
+		session.mu.Lock()
+
+		// Clean up individual stale queries first
+		activeQueryCount := 0
+		for queryID, query := range session.ActiveQueries {
+			if query.IsActive && query.LastUsed.Before(inactiveQueryCutoff) {
+				log.Printf("🧹 Ending stale query %s for client %s (inactive for %v)",
+					queryID, clientID, now.Sub(query.LastUsed))
+				query.IsActive = false
+				delete(session.ActiveQueries, queryID)
+			} else if query.IsActive {
+				activeQueryCount++
+			}
+		}
+
+		// Remove entire session if completely stale
+		if session.LastActivity.Before(staleCutoff) && activeQueryCount == 0 {
+			session.mu.Unlock()
+			delete(s.sessions, clientID)
+			log.Printf("🧹 Removed stale session for client %s (inactive for %v)",
+				clientID, now.Sub(session.LastActivity))
+			continue
+		}
+
+		session.mu.Unlock()
+	}
+}
+
+// Last9MCPServer with enhanced trace store
 type Last9MCPServer struct {
 	Server          *mcp.Server
 	serverName      string
 	serverTransport string
-	hubManager      *HubManager
 	tracer          trace.Tracer
 	meter           metric.Meter
+	traceStore      *SessionBasedTraceStore
 
 	// Metrics instruments
 	callCounter  metric.Int64Counter
 	callDuration metric.Float64Histogram
 	errorCounter metric.Int64Counter
+
+	// Client management (simplified from HubManager)
+	currentClientID string // for stdio compatibility
+	mu              sync.RWMutex
+
+	// Disconnect handling
+	transportCtx    context.Context
+	transportCancel context.CancelFunc
+	disconnectChan  chan string
 }
 
-// parseArguments is a helper function to handle the any type of req.Params.Arguments
-// and unmarshal it into the provided struct
+// parseArguments helper function (unchanged from original)
 func parseArguments(arguments any, target interface{}) error {
 	switch args := arguments.(type) {
 	case json.RawMessage:
-		// Arguments come as raw JSON bytes
 		return json.Unmarshal(args, target)
 	case map[string]interface{}:
-		// Arguments are already parsed into a map
-		// Convert back to JSON and unmarshal to get proper types
 		jsonBytes, err := json.Marshal(args)
 		if err != nil {
 			return fmt.Errorf("failed to marshal map to JSON: %w", err)
 		}
 		return json.Unmarshal(jsonBytes, target)
 	case nil:
-		// No arguments provided
 		return fmt.Errorf("no arguments provided")
 	default:
-		// Try to marshal and unmarshal as a fallback for any other type
 		jsonBytes, err := json.Marshal(args)
 		if err != nil {
 			return fmt.Errorf("failed to marshal arguments to JSON: %w", err)
@@ -100,26 +326,26 @@ func mapServerTransport(transport mcp.Transport) string {
 	}
 }
 
-// initOpenTelemetry sets up OpenTelemetry SDK
+// initOpenTelemetry sets up OpenTelemetry SDK (fixed error handling)
 func initOpenTelemetry(serviceName, version string) error {
 	ctx := context.Background()
 	traceExp, err := otlptracehttp.New(ctx, otlptracehttp.WithInsecure())
 	if err != nil {
-		return fmt.Errorf("creating stdout exporter: %w", err)
+		return fmt.Errorf("creating trace exporter: %w", err)
 	}
 
-	// Create resource
-	res := resource.NewWithAttributes(
-		semconv.SchemaURL,
-		semconv.ServiceName(serviceName),
-		semconv.ServiceVersion(version),
-		attribute.String("mcp.server.type", "golang"),
+	// Fixed: proper resource creation with error handling
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(serviceName),
+			semconv.ServiceVersion(version),
+			attribute.String("mcp.server.type", "golang"),
+		),
 	)
 	if err != nil {
 		return fmt.Errorf("creating resource: %w", err)
 	}
 
-	// Create trace provider
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
@@ -127,14 +353,11 @@ func initOpenTelemetry(serviceName, version string) error {
 	)
 
 	otel.SetTracerProvider(tp)
-
-	// Register W3C Trace Context propagator as the global so any imported
-	// instrumentation in the future will default to using it.
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	metricExp, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithInsecure())
 	if err != nil {
-		return fmt.Errorf("creating stdout metric exporter: %w", err)
+		return fmt.Errorf("creating metric exporter: %w", err)
 	}
 
 	mp := sdkmetric.NewMeterProvider(
@@ -144,15 +367,13 @@ func initOpenTelemetry(serviceName, version string) error {
 	)
 
 	otel.SetMeterProvider(mp)
-
 	return nil
 }
 
-// initMetrics initializes OpenTelemetry metrics instruments
+// initMetrics initializes OpenTelemetry metrics instruments (unchanged)
 func (w *Last9MCPServer) initMetrics() error {
 	var err error
 
-	// Counter for total tool calls
 	w.callCounter, err = w.meter.Int64Counter(
 		"mcp_tool_calls_total",
 		metric.WithDescription("Total number of MCP tool calls"),
@@ -162,7 +383,6 @@ func (w *Last9MCPServer) initMetrics() error {
 		return fmt.Errorf("creating call counter: %w", err)
 	}
 
-	// Histogram for call duration
 	w.callDuration, err = w.meter.Float64Histogram(
 		"mcp_tool_call_duration_seconds",
 		metric.WithDescription("Duration of MCP tool calls in seconds"),
@@ -172,7 +392,6 @@ func (w *Last9MCPServer) initMetrics() error {
 		return fmt.Errorf("creating duration histogram: %w", err)
 	}
 
-	// Counter for errors
 	w.errorCounter, err = w.meter.Int64Counter(
 		"mcp_tool_errors_total",
 		metric.WithDescription("Total number of MCP tool call errors"),
@@ -183,18 +402,15 @@ func (w *Last9MCPServer) initMetrics() error {
 	}
 
 	log.Println("📊 OpenTelemetry metrics instruments initialized")
-
 	return nil
 }
 
-// NewServer creates a new wrapper with OpenTelemetry instrumentation
+// NewServer creates a new server with enhanced trace management
 func NewServer(serverName, version string) (*Last9MCPServer, error) {
-	// Initialize OpenTelemetry
 	if err := initOpenTelemetry(serverName, version); err != nil {
 		return nil, fmt.Errorf("failed to initialize OpenTelemetry: %w", err)
 	}
 
-	// Create tracer and meter
 	tracer := otel.Tracer("last9-mcp-server")
 	meter := otel.Meter("last9-mcp-server")
 
@@ -204,18 +420,16 @@ func NewServer(serverName, version string) (*Last9MCPServer, error) {
 	}
 
 	server := &Last9MCPServer{
-		Server:     mcp.NewServer(&info, nil),
-		serverName: serverName,
-		tracer:     tracer,
-		meter:      meter,
-		hubManager: &HubManager{
-			hubs: make(map[string]*Hub),
-		},
+		Server:         mcp.NewServer(&info, nil),
+		serverName:     serverName,
+		tracer:         tracer,
+		meter:          meter,
+		traceStore:     NewSessionBasedTraceStore(),
+		disconnectChan: make(chan string, 10),
 	}
 
 	server.Server.AddReceivingMiddleware(server.requestStartMiddleware)
 
-	// Initialize metrics instruments
 	if err := server.initMetrics(); err != nil {
 		return nil, fmt.Errorf("failed to initialize metrics: %w", err)
 	}
@@ -223,72 +437,158 @@ func NewServer(serverName, version string) (*Last9MCPServer, error) {
 	return server, nil
 }
 
+// Enhanced middleware with proper context propagation
 func (s *Last9MCPServer) requestStartMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		var hub *Hub
+		var clientID string
+		var clientInfo ClientInfo
 
 		if method == "initialize" {
-			hub = s.handleInitializeAndCreateHub(req)
+			clientInfo = s.extractClientInfo(req)
+			clientID = s.getOrGenerateClientID(clientInfo)
+			s.traceStore.CreateSession(clientID, clientInfo)
+
+			// Set as current client for stdio compatibility
+			s.mu.Lock()
+			s.currentClientID = clientID
+			s.mu.Unlock()
 		} else {
-			hub = s.GetCurrentHub(ctx, req)
+			clientID = s.getCurrentClientID(ctx, req)
+			if info, exists := s.traceStore.GetClientInfo(clientID); exists {
+				clientInfo = info
+			} else {
+				// Fallback for unknown client
+				clientInfo = ClientInfo{
+					Name:      "unknown_client",
+					Version:   "unknown",
+					Transport: "unknown",
+				}
+			}
 		}
 
-		// Add hub context to the request context for tools
-		ctx = context.WithValue(ctx, "hub", hub)
+		// Add client info to context
+		ctx = context.WithValue(ctx, "clientID", clientID)
+		ctx = context.WithValue(ctx, "clientInfo", clientInfo)
 
-		ctx, span := s.addTrace(ctx, method, req)
+		// Handle trace context with proper cross-process propagation
+		ctx, span := s.handleTraceContext(ctx, method, req, clientID)
 		if span != nil {
 			defer span.End()
 		}
 
-		resp, err := next(ctx, method, req)
-		return resp, err
+		return next(ctx, method, req)
 	}
 }
 
-// GetCurrentHub retrieves the current hub for the client from context
-func (s *Last9MCPServer) GetCurrentHub(ctx context.Context, req mcp.Request) *Hub {
-	// Try to get hub from context
-	if hub, ok := ctx.Value("hub").(*Hub); ok {
-		return hub
+// Enhanced trace context handling with proper multi-client support
+func (s *Last9MCPServer) handleTraceContext(ctx context.Context, method string, req mcp.Request, clientID string) (context.Context, trace.Span) {
+	if method != "tools/call" {
+		// For non-tool methods, create simple spans
+		return s.tracer.Start(ctx, fmt.Sprintf("mcp.%s", method))
 	}
 
-	// Fallback to currentHub in HubManager (for stdio transport)
-	if s.hubManager.currentHub != nil {
-		return s.hubManager.currentHub
+	ctr, ok := req.(*mcp.CallToolRequest)
+	if !ok {
+		return ctx, nil
 	}
 
-	return &Hub{
-		ClientInfo: ClientInfo{
-			Name:      "unknown_client",
-			Version:   "unknown",
-			Transport: "unknown",
-		},
+	toolName := ctr.Params.Name
+	clientInfo := ctx.Value("clientInfo").(ClientInfo)
+
+	// Extract query information from tool arguments
+	queryInfo := s.extractQueryInfo(ctr)
+
+	// Handle explicit end-trace signal
+	if toolName == "last9-telemetry" {
+		ended := s.traceStore.EndQuery(clientID)
+		log.Printf("🏁 Query ended for client %s (had active query: %v)", clientInfo.Name, ended)
+		return ctx, nil
+	}
+
+	// Check if we have an active query context
+	if parentSpanCtx, queryID, exists := s.traceStore.GetQueryContext(clientID); exists {
+		// Continue existing query - create child span
+		ctx = trace.ContextWithSpanContext(ctx, parentSpanCtx)
+
+		// Build attributes including query info
+		attrs := []trace.SpanStartOption{
+			trace.WithAttributes(
+				attribute.String("tool.name", toolName),
+				attribute.String("query.id", queryID),
+				attribute.String("client.id", clientID),
+			),
+		}
+
+		// Add query information attributes if available
+		if len(queryInfo.Attributes) > 0 {
+			attrs = append(attrs, trace.WithAttributes(queryInfo.Attributes...))
+		}
+
+		ctx, span := s.tracer.Start(ctx, fmt.Sprintf("mcp.tool.%s", toolName), attrs...)
+
+		log.Printf("🔗 [%s] Continuing query %s with tool: %s", clientInfo.Name, queryID, toolName)
+		return ctx, span
+	} else {
+		// Start new query - create root span and store context
+		queryID := fmt.Sprintf("query_%s_%d", clientID, time.Now().UnixNano())
+
+		// Build root query span attributes
+		queryAttrs := []attribute.KeyValue{
+			attribute.String("query.id", queryID),
+			attribute.String("client.id", clientID),
+			attribute.String("client.name", clientInfo.Name),
+			attribute.String("query.first_tool", toolName),
+		}
+
+		// Add extracted query information
+		if queryInfo.Content != "" {
+			queryAttrs = append(queryAttrs, attribute.String("query.content", queryInfo.Content))
+		}
+		queryAttrs = append(queryAttrs, queryInfo.Attributes...)
+
+		ctx, querySpan := s.tracer.Start(ctx, "mcp.user_query",
+			trace.WithAttributes(queryAttrs...))
+
+		// Store query context for subsequent tool calls
+		s.traceStore.StoreQueryContext(clientID, queryID, querySpan.SpanContext())
+
+		// Create first tool span as child of query
+		toolAttrs := []attribute.KeyValue{
+			attribute.String("tool.name", toolName),
+			attribute.String("query.id", queryID),
+			attribute.String("client.id", clientID),
+		}
+		toolAttrs = append(toolAttrs, queryInfo.Attributes...)
+
+		ctx, toolSpan := s.tracer.Start(ctx, fmt.Sprintf("mcp.tool.%s", toolName),
+			trace.WithAttributes(toolAttrs...))
+
+		// End query span since we only need its context stored
+		querySpan.End()
+
+		log.Printf("🆕 [%s] Started new query %s with tool: %s", clientInfo.Name, queryID, toolName)
+		return ctx, toolSpan
 	}
 }
 
-// handleInitializeAndCreateHub extracts client info from initialize request and creates appropriate hub
-func (s *Last9MCPServer) handleInitializeAndCreateHub(req mcp.Request) *Hub {
-	// Try to extract client information from initialize request
-	clientInfo := s.extractClientInfo(req)
+// getCurrentClientID retrieves current client ID with fallback
+func (s *Last9MCPServer) getCurrentClientID(ctx context.Context, req mcp.Request) string {
+	if clientID, ok := ctx.Value("clientID").(string); ok {
+		return clientID
+	}
 
-	// Generate client ID based on client info and process
-	clientID := s.getOrGenerateClientID(clientInfo)
+	// Fallback to current client for stdio compatibility
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	// Create hub for this client
-	hub := s.hubManager.CreateHub(clientID, clientInfo)
+	if s.currentClientID != "" {
+		return s.currentClientID
+	}
 
-	// Set as current hub for stdio transport
-	// TODO: Add handling for http
-	s.hubManager.currentHub = hub
-
-	log.Printf("🎯 Created hub %s for client %s v%s via %s transport",
-		clientID, clientInfo.Name, clientInfo.Version, clientInfo.Transport)
-
-	return hub
+	return "unknown_client_stdio"
 }
 
-// extractClientInfo extracts client information from MCP initialize request
+// extractClientInfo extracts client information (unchanged logic)
 func (s *Last9MCPServer) extractClientInfo(req mcp.Request) ClientInfo {
 	clientInfo := ClientInfo{
 		Name:      "unknown_client",
@@ -296,154 +596,142 @@ func (s *Last9MCPServer) extractClientInfo(req mcp.Request) ClientInfo {
 		Transport: "stdio",
 	}
 
-	log.Printf("🔍 Extracting client info from request of type %T", req)
-
 	if initParams, ok := req.GetParams().(*mcp.InitializeParams); ok {
 		clientInfo.Name = initParams.ClientInfo.Name
 		clientInfo.Version = initParams.ClientInfo.Version
-		log.Printf("Protocol Version: %s\n", initParams.ProtocolVersion)
 
 		if initParams.Capabilities != nil {
 			clientInfo.Capabilities = *initParams.Capabilities
 		}
 
-		// Detect transport type (stdio is default for subprocess)
 		clientInfo.Transport = "stdio"
-
 		log.Printf("📋 Extracted client info: %s v%s", clientInfo.Name, clientInfo.Version)
-		return clientInfo
 	}
 
 	return clientInfo
 }
 
-// generateClientID creates a unique client identifier
+// getOrGenerateClientID creates unique client ID with process info
 func (s *Last9MCPServer) getOrGenerateClientID(clientInfo ClientInfo) string {
-	// For stdio transport, use client name + process info
 	if clientInfo.Transport == "stdio" {
-		// In stdio, each subprocess = unique client
-		return fmt.Sprintf("%s_stdio", clientInfo.Name)
+		pid := os.Getpid()
+		timestamp := time.Now().UnixNano()
+		return fmt.Sprintf("%s_stdio_%d_%d", clientInfo.Name, pid, timestamp)
 	}
 
-	// For future HTTP/SSE transport, could include connection info
-	return fmt.Sprintf("%s_%s_%d",
-		clientInfo.Name,
-		clientInfo.Transport)
+	return fmt.Sprintf("%s_%s_%d", clientInfo.Name, clientInfo.Transport, time.Now().UnixNano())
 }
 
-// CreateHub creates a new hub for a client
-func (hm *HubManager) CreateHub(clientID string, clientInfo ClientInfo) *Hub {
-	hm.mu.Lock()
-	defer hm.mu.Unlock()
+// extractQueryInfo extracts user query information from tool call arguments
+func (s *Last9MCPServer) extractQueryInfo(ctr *mcp.CallToolRequest) QueryInfo {
+	queryInfo := QueryInfo{}
 
-	hub := &Hub{
-		ClientInfo: clientInfo,
+	if ctr.Params.Arguments == nil {
+		return queryInfo
 	}
 
-	hm.hubs[clientID] = hub
+	// Parse arguments to extract meaningful query information
+	var args map[string]interface{}
+	if err := parseArguments(ctr.Params.Arguments, &args); err != nil {
+		// If parsing fails, try to get basic string representation
+		if argStr := fmt.Sprintf("%v", ctr.Params.Arguments); len(argStr) > 0 && argStr != "<nil>" {
+			queryInfo.Content = argStr
+		}
+		return queryInfo
+	}
 
-	log.Printf("🔄 Created new hub for client %s", clientID)
-	return hub
+	// Extract common query-related fields
+	queryFields := []string{
+		"query", "request", "question", "prompt", "message", "text", "content",
+		"command", "instruction", "task", "goal", "objective", "description",
+	}
+
+	var extractedContent []string
+	var allArgs []string
+
+	for key, value := range args {
+		valueStr := fmt.Sprintf("%v", value)
+
+		// Add as attribute - keep full content without truncation
+		queryInfo.Attributes = append(queryInfo.Attributes,
+			attribute.String(fmt.Sprintf("arg.%s", key), valueStr))
+
+		// Check if this looks like a query field
+		keyLower := fmt.Sprintf("%v", key)
+		for _, field := range queryFields {
+			if keyLower == field {
+				extractedContent = append(extractedContent, valueStr)
+				break
+			}
+		}
+
+		// Collect all args for fallback
+		allArgs = append(allArgs, fmt.Sprintf("%s: %v", key, value))
+	}
+
+	// Build content
+	if len(extractedContent) > 0 {
+		queryInfo.Content = fmt.Sprintf("%s", extractedContent[0])
+	} else if len(allArgs) > 0 {
+		// Use all arguments as content if no specific query fields found
+		content := fmt.Sprintf("Tool: %s, Args: %s", ctr.Params.Name, allArgs[0])
+		if len(allArgs) > 1 {
+			content += fmt.Sprintf(" (+%d more)", len(allArgs)-1)
+		}
+		queryInfo.Content = content
+	}
+
+	return queryInfo
 }
 
-// RegisterInstrumentedTool registers a tool with OpenTelemetry instrumentation
+// RegisterInstrumentedTool with enhanced instrumentation
 func (w *Last9MCPServer) RegisterInstrumentedTool(name string, tool mcp.Tool, handler mcp.ToolHandler) {
-	// Wrap the handler with OpenTelemetry instrumentation
 	instrumentedHandler := w.instrumentHandler(name, handler)
 	w.Server.AddTool(&tool, instrumentedHandler)
 }
 
-// addParentSpanToContext adds a span to the context
-func (s *Last9MCPServer) addParentSpanToContext(ctx context.Context, parent trace.Span) context.Context {
-	if parent == nil {
-		return ctx
-	}
-	ctx = trace.ContextWithSpan(ctx, parent)
-	return ctx
-}
-
-func (s *Last9MCPServer) createNewTrace(ctx context.Context, method string, hub *Hub) (context.Context, trace.Span) {
-	ctx, span := s.tracer.Start(ctx, fmt.Sprintf("mcp.tool.%s", method))
-	hub.currentTrace = span
-	ctx = s.addParentSpanToContext(ctx, span)
-	return ctx, span
-}
-
-func (s *Last9MCPServer) addTrace(ctx context.Context, method string, req mcp.Request) (context.Context, trace.Span) {
-	hub, _ := ctx.Value("hub").(*Hub)
-
-	methodCall := method
-	ctr, ok := req.(*mcp.CallToolRequest)
-	if ok {
-		methodCall = ctr.Params.Name
-		if ctr.Params.Name == "last9-telemetry" {
-			// Ending trace handled in tool handler
-			return ctx, nil
-		}
-	}
-
-	if hub.currentTrace == nil {
-		ctx, _ := s.createNewTrace(ctx, methodCall, hub)
-		return ctx, nil
-	}
-
-	// add current trace as parent
-	ctx = s.addParentSpanToContext(ctx, hub.currentTrace)
-
-	// Start a new child span for this method call
-	ctx, childSpan := s.tracer.Start(ctx, fmt.Sprintf("mcp.tool.%s", methodCall),
-		trace.WithAttributes(
-			attribute.String("mcp.tool.name", methodCall),
-		))
-
-	log.Printf("🔍 [addTrace] Started child span from ctx: %v", trace.SpanFromContext(ctx))
-	return ctx, childSpan
-}
-
-// instrumentHandler wraps a tool handler with OpenTelemetry tracing and metrics
+// Enhanced tool handler instrumentation
 func (w *Last9MCPServer) instrumentHandler(toolName string, originalHandler mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, mcpReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		span := trace.SpanFromContext(ctx)
-		span.SetAttributes(attribute.String("mcp.server.transport", w.serverTransport))
+		clientID := ctx.Value("clientID").(string)
+		clientInfo := ctx.Value("clientInfo").(ClientInfo)
 
+		span.SetAttributes(
+			attribute.String("mcp.server.transport", w.serverTransport),
+			attribute.String("client.name", clientInfo.Name),
+			attribute.String("client.id", clientID),
+		)
+
+		// Parse and add parameters
 		var p interface{}
-		err := parseArguments(mcpReq.Params.Arguments, &p)
+		if err := parseArguments(mcpReq.Params.Arguments, &p); err == nil {
+			w.addParamsToSpan(span, p)
+		}
 
-		// Add parameters to span (be careful not to log sensitive data)
-		w.addParamsToSpan(span, p)
-
-		// Record start time for metrics
 		startTime := time.Now()
-
-		// Create metric attributes
 		metricAttrs := []attribute.KeyValue{
 			attribute.String("tool_name", toolName),
 			attribute.String("server_transport", w.serverTransport),
+			attribute.String("client_name", clientInfo.Name),
 		}
 
 		w.callCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
 
-		// Call the original handler
+		// Call original handler
 		result, err := originalHandler(ctx, mcpReq)
 
-		// Calculate duration
+		// Record metrics and span status
 		duration := time.Since(startTime)
-
-		// Record metrics
 		w.callDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(metricAttrs...))
 
-		// Handle errors and success
 		success := err == nil && (result == nil || !result.IsError)
-
 		if success {
 			span.SetStatus(codes.Ok, "Tool call completed successfully")
 			span.SetAttributes(attribute.String("mcp.result.status", "success"))
 		} else {
-			// Record error metrics
 			errorAttrs := append(metricAttrs, attribute.String("error_type", "tool_error"))
 			w.errorCounter.Add(ctx, 1, metric.WithAttributes(errorAttrs...))
-
-			// Set span status
 			span.SetStatus(codes.Error, "Tool call failed")
 			span.SetAttributes(attribute.String("mcp.result.status", "error"))
 
@@ -453,82 +741,222 @@ func (w *Last9MCPServer) instrumentHandler(toolName string, originalHandler mcp.
 			} else if result.IsError {
 				errMsg := "unknown error"
 				if len(result.Content) > 0 {
-					// Attempt to extract error message from result content
 					if msg, ok := result.Content[0].(*mcp.TextContent); ok {
 						errMsg = msg.Text
 					}
 				}
-				span.SetAttributes(attribute.String("mcp.error.message", string(errMsg)))
+				span.SetAttributes(attribute.String("mcp.error.message", errMsg))
 			}
 		}
 
-		// Add more span attributes
 		span.SetAttributes(
 			attribute.Float64("mcp.duration.seconds", duration.Seconds()),
 			attribute.Int64("mcp.duration.milliseconds", duration.Milliseconds()),
 			attribute.Bool("mcp.success", success),
 		)
 
-		log.Printf("🏁 [OTel] Completed tool call: %s (duration: %v, success: %v)",
-			toolName, duration, success)
+		log.Printf("🏁 [%s] Completed tool call: %s (duration: %v, success: %v)",
+			clientInfo.Name, toolName, duration, success)
 
 		return result, err
 	}
 }
 
-// addParamsToSpan safely adds parameters to the span (avoiding sensitive data)
+// Safe parameter addition to span
 func (w *Last9MCPServer) addParamsToSpan(span trace.Span, params interface{}) {
 	if params == nil {
 		return
 	}
-	args := params.(map[string]interface{})
-	// Add parameter count
-	span.SetAttributes(attribute.Int("mcp.params.count", len(args)))
 
-	if len(args) > 0 {
-		for key := range args {
-			span.SetAttributes(attribute.String(fmt.Sprintf("mcp.param.%s", key), fmt.Sprintf("%v", args[key])))
+	defer func() {
+		if r := recover(); r != nil {
+			span.SetAttributes(attribute.String("mcp.params.error", "failed to parse parameters"))
+		}
+	}()
+
+	if args, ok := params.(map[string]interface{}); ok {
+		span.SetAttributes(attribute.Int("mcp.params.count", len(args)))
+
+		for key, value := range args {
+			valueStr := fmt.Sprintf("%v", value)
+			// Keep full parameter value without truncation
+			span.SetAttributes(attribute.String(fmt.Sprintf("mcp.param.%s", key), valueStr))
 		}
 	}
 }
 
-func endParentTrace(ctx context.Context) {
-	span := trace.SpanFromContext(ctx)
-	span.End()
-
-	hub, _ := ctx.Value("hub").(*Hub)
-	if hub != nil && hub.currentTrace != nil {
-		hub.currentTrace.End()
-		hub.currentTrace = nil
-	}
-}
-
-// Serve starts the MCP server
+// Serve starts the server with enhanced telemetry tool and disconnect monitoring
 func (w *Last9MCPServer) Serve(ctx context.Context, transport mcp.Transport) error {
-	log.Println("🚀 Starting instrumented MCP server...")
+	log.Println("🚀 Starting enhanced instrumented MCP server...")
+
+	// Create transport context for disconnect detection
+	w.transportCtx, w.transportCancel = context.WithCancel(ctx)
+
+	// Start disconnect monitor
+	go w.monitorDisconnects()
 
 	w.serverTransport = mapServerTransport(transport)
+
+	// Add enhanced telemetry tool with multi-client support
 	w.Server.AddTool(&mcp.Tool{
 		Name:        "last9-telemetry",
-		Description: "After all calls of tools are done, this should be called necessarily without skipping. It will never be called as the first tool in a trace.",
+		Description: "Must be called at the end of each user query to properly close trace spans. Critical for observability and multi-client trace isolation.",
 		InputSchema: &jsonschema.Schema{
-			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{},
-			Required:   []string{},
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"query_summary": {
+					Type:        "string",
+					Description: "Optional summary of what was accomplished in this query",
+				},
+			},
+			Required: []string{},
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		endParentTrace(ctx)
+		clientID := ctx.Value("clientID").(string)
+		clientInfo := ctx.Value("clientInfo").(ClientInfo)
+
+		// End the current query for this specific client
+		ended := w.traceStore.EndQuery(clientID)
+
+		var message string
+		var summary string
+
+		// Extract query summary if provided
+		var args map[string]interface{}
+		if err := parseArguments(req.Params.Arguments, &args); err == nil {
+			if s, exists := args["query_summary"].(string); exists && s != "" {
+				summary = s
+			}
+		}
+
+		if ended {
+			if summary != "" {
+				message = fmt.Sprintf("Query trace ended for client %s. Summary: %s", clientInfo.Name, summary)
+			} else {
+				message = fmt.Sprintf("Query trace ended for client %s", clientInfo.Name)
+			}
+			log.Printf("🏁 [%s] Query trace ended with summary: %s", clientInfo.Name, summary)
+		} else {
+			message = fmt.Sprintf("No active query found for client %s", clientInfo.Name)
+			log.Printf("⚠️ [%s] No active query to end", clientInfo.Name)
+		}
+
 		return &mcp.CallToolResult{
 			IsError: false,
-			Content: []mcp.Content{&mcp.TextContent{Text: "Trace ended"}},
+			Content: []mcp.Content{&mcp.TextContent{Text: message}},
 		}, nil
 	})
-	err := w.Server.Run(ctx, transport)
+
+	err := w.Server.Run(w.transportCtx, transport)
 	if err != nil {
 		log.Printf("❌ MCP server encountered an error: %v", err)
 		span := trace.SpanFromContext(ctx)
-		span.SetAttributes(attribute.String("mcp.server.error", err.Error()))
-		endParentTrace(ctx)
+		if span != nil {
+			span.SetAttributes(attribute.String("mcp.server.error", err.Error()))
+		}
+		// Signal all clients as disconnected
+		w.handleServerShutdown()
 	}
 	return err
+}
+
+// monitorDisconnects monitors for client disconnects and cleans up immediately
+func (w *Last9MCPServer) monitorDisconnects() {
+	for {
+		select {
+		case clientID := <-w.disconnectChan:
+			log.Printf("🔌 Client disconnected: %s", clientID)
+			w.handleClientDisconnect(clientID)
+
+		case <-w.transportCtx.Done():
+			log.Println("🔌 Transport context cancelled, stopping disconnect monitoring")
+			return
+		}
+	}
+}
+
+// handleClientDisconnect cleans up resources for a disconnected client
+func (w *Last9MCPServer) handleClientDisconnect(clientID string) {
+	// Immediately clean up this client's traces
+	if ended := w.traceStore.EndQuery(clientID); ended {
+		log.Printf("🧹 Cleaned up active queries for disconnected client %s", clientID)
+	}
+
+	// Clear currentClientID if it matches
+	w.mu.Lock()
+	if w.currentClientID == clientID {
+		w.currentClientID = ""
+	}
+	w.mu.Unlock()
+
+	// Force cleanup of this client's session
+	w.traceStore.forceCleanupClient(clientID)
+}
+
+// handleServerShutdown signals all active clients as disconnected
+func (w *Last9MCPServer) handleServerShutdown() {
+	// Signal all active clients as disconnected
+	clientIDs := w.traceStore.GetAllClientIDs()
+	for _, clientID := range clientIDs {
+		select {
+		case w.disconnectChan <- clientID:
+		default:
+		}
+	}
+}
+
+// Enhanced shutdown with proper cleanup
+func (w *Last9MCPServer) Shutdown(ctx context.Context) error {
+	log.Println("🛑 Shutting down MCP server...")
+
+	// Stop disconnect monitoring
+	if w.transportCancel != nil {
+		w.transportCancel()
+	}
+
+	// Stop trace store cleanup
+	if w.traceStore != nil && w.traceStore.cleanup != nil {
+		w.traceStore.cleanup.Stop()
+	}
+
+	// End all active sessions and queries
+	if w.traceStore != nil {
+		w.traceStore.mu.Lock()
+		for clientID, session := range w.traceStore.sessions {
+			session.mu.Lock()
+			for queryID, query := range session.ActiveQueries {
+				if query.IsActive {
+					query.IsActive = false
+					log.Printf("🧹 Ended active query %s for client %s during shutdown", queryID, clientID)
+				}
+			}
+			session.ActiveQueries = make(map[string]*StoredTraceContext)
+			session.mu.Unlock()
+		}
+		w.traceStore.sessions = make(map[string]*ClientSession)
+		w.traceStore.mu.Unlock()
+	}
+
+	// Clear current client
+	w.mu.Lock()
+	w.currentClientID = ""
+	w.mu.Unlock()
+
+	// Shutdown OpenTelemetry providers
+	if tp, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider); ok {
+		if err := tp.Shutdown(ctx); err != nil {
+			log.Printf("❌ Error shutting down trace provider: %v", err)
+			return err
+		}
+	}
+
+	if mp, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider); ok {
+		if err := mp.Shutdown(ctx); err != nil {
+			log.Printf("❌ Error shutting down meter provider: %v", err)
+			return err
+		}
+	}
+
+	log.Println("✅ MCP server shutdown complete")
+	return nil
 }
