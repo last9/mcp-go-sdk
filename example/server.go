@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -92,7 +93,7 @@ func NewExampleServer() (*ExampleServer, error) {
 // registerTools registers all available tools with the server
 func (s *ExampleServer) registerTools() {
 	// Register test tool
-	testTool := mcp.Tool{
+	testTool := &mcp.Tool{
 		Name:        "test-tool",
 		Description: "A simple test tool that echoes messages with optional delay and error simulation",
 		InputSchema: &jsonschema.Schema{
@@ -115,10 +116,10 @@ func (s *ExampleServer) registerTools() {
 		},
 	}
 
-	s.wrapper.RegisterInstrumentedTool("test-tool", testTool, s.handleTestTool)
+	last9mcp.RegisterInstrumentedTool(s.wrapper, testTool, s.handleTestTool)
 
 	// Register calculator tool
-	calculatorTool := mcp.Tool{
+	calculatorTool := &mcp.Tool{
 		Name:        "calculator",
 		Description: "Performs basic mathematical operations",
 		InputSchema: &jsonschema.Schema{
@@ -142,10 +143,10 @@ func (s *ExampleServer) registerTools() {
 		},
 	}
 
-	s.wrapper.RegisterInstrumentedTool("calculator", calculatorTool, s.handleCalculator)
+	last9mcp.RegisterInstrumentedTool(s.wrapper, calculatorTool, s.handleCalculator)
 
 	// Register data processor tool
-	dataProcessorTool := mcp.Tool{
+	dataProcessorTool := &mcp.Tool{
 		Name:        "data-processor",
 		Description: "Processes arrays of strings with various operations",
 		InputSchema: &jsonschema.Schema{
@@ -168,10 +169,10 @@ func (s *ExampleServer) registerTools() {
 		},
 	}
 
-	s.wrapper.RegisterInstrumentedTool("data-processor", dataProcessorTool, s.handleDataProcessor)
+	last9mcp.RegisterInstrumentedTool(s.wrapper, dataProcessorTool, s.handleDataProcessor)
 
 	// Register random generator tool
-	randomTool := mcp.Tool{
+	randomTool := &mcp.Tool{
 		Name:        "random-generator",
 		Description: "Generates random data for testing",
 		InputSchema: &jsonschema.Schema{
@@ -191,207 +192,45 @@ func (s *ExampleServer) registerTools() {
 		},
 	}
 
-	s.wrapper.RegisterInstrumentedTool("random-generator", randomTool, s.handleRandomGenerator)
+	last9mcp.RegisterInstrumentedTool(s.wrapper, randomTool, s.handleRandomGenerator)
+
+	// Register HTTP API tool to demonstrate HTTP tracing
+	httpTool := &mcp.Tool{
+		Name:        "http-api-call",
+		Description: "Makes HTTP requests to external APIs with automatic tracing",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"url": {
+					Type:        "string",
+					Description: "The URL to make the HTTP request to",
+				},
+				"method": {
+					Type:        "string",
+					Description: "HTTP method (GET, POST, PUT, DELETE)",
+					Enum:        []interface{}{"GET", "POST", "PUT", "DELETE"},
+				},
+				"timeout": {
+					Type:        "integer",
+					Description: "Timeout in seconds (default: 10)",
+				},
+			},
+			Required: []string{"url", "method"},
+		},
+	}
+
+	last9mcp.RegisterInstrumentedTool(s.wrapper, httpTool, s.handleHTTPAPICall)
 
 	log.Println("🔧 Registered all tools successfully")
 }
 
-// handleTestTool handles the test-tool calls
-func (s *ExampleServer) handleTestTool(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args TestToolArgs
-	if err := parseArguments(req.Params.Arguments, &args); err != nil {
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Invalid arguments: %v", err)}},
-		}, nil
-	}
-
-	// Simulate delay if requested
-	if args.Delay != nil && *args.Delay > 0 {
-		time.Sleep(time.Duration(*args.Delay) * time.Millisecond)
-	}
-
-	// Simulate error if requested
-	if args.Error != nil && *args.Error {
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: "Simulated error as requested"}},
-		}, nil
-	}
-
-	response := fmt.Sprintf("Echo: %s (processed at %s)", args.Message, time.Now().Format("15:04:05"))
-
-	return &mcp.CallToolResult{
-		IsError: false,
-		Content: []mcp.Content{&mcp.TextContent{Text: response}},
-	}, nil
-}
-
-// handleCalculator handles calculator operations
-func (s *ExampleServer) handleCalculator(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args CalculatorArgs
-	if err := parseArguments(req.Params.Arguments, &args); err != nil {
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Invalid arguments: %v", err)}},
-		}, nil
-	}
-
-	var result float64
-
-	switch args.Operation {
-	case "add":
-		result = args.A + args.B
-	case "subtract":
-		result = args.A - args.B
-	case "multiply":
-		result = args.A * args.B
-	case "divide":
-		if args.B == 0 {
-			return &mcp.CallToolResult{
-				IsError: true,
-				Content: []mcp.Content{&mcp.TextContent{Text: "Division by zero is not allowed"}},
-			}, nil
-		}
-		result = args.A / args.B
-	default:
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Unknown operation: %s", args.Operation)}},
-		}, nil
-	}
-
-	response := fmt.Sprintf("%.2f %s %.2f = %.2f", args.A, args.Operation, args.B, result)
-
-	return &mcp.CallToolResult{
-		IsError: false,
-		Content: []mcp.Content{&mcp.TextContent{Text: response}},
-	}, nil
-}
-
-// handleDataProcessor handles data processing operations
-func (s *ExampleServer) handleDataProcessor(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args DataProcessorArgs
-	if err := parseArguments(req.Params.Arguments, &args); err != nil {
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Invalid arguments: %v", err)}},
-		}, nil
-	}
-
-	var response string
-
-	switch args.Operation {
-	case "count":
-		response = fmt.Sprintf("Array contains %d items", len(args.Data))
-	case "reverse":
-		reversed := make([]string, len(args.Data))
-		for i, v := range args.Data {
-			reversed[len(args.Data)-1-i] = v
-		}
-		response = fmt.Sprintf("Reversed: %v", reversed)
-	case "sort":
-		// Simple bubble sort for demonstration
-		sorted := make([]string, len(args.Data))
-		copy(sorted, args.Data)
-		for i := 0; i < len(sorted); i++ {
-			for j := 0; j < len(sorted)-1-i; j++ {
-				if sorted[j] > sorted[j+1] {
-					sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
-				}
-			}
-		}
-		response = fmt.Sprintf("Sorted: %v", sorted)
-	case "uppercase":
-		uppercased := make([]string, len(args.Data))
-		for i, v := range args.Data {
-			uppercased[i] = strings.ToUpper(v)
-		}
-		response = fmt.Sprintf("Uppercased: %v", uppercased)
-	default:
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Unknown operation: %s", args.Operation)}},
-		}, nil
-	}
-
-	return &mcp.CallToolResult{
-		IsError: false,
-		Content: []mcp.Content{&mcp.TextContent{Text: response}},
-	}, nil
-}
-
-// handleRandomGenerator handles random data generation
-func (s *ExampleServer) handleRandomGenerator(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args struct {
-		Type  string `json:"type"`
-		Count *int   `json:"count,omitempty"`
-	}
-
-	log.Printf("Meta Data in Random Generator: %+v", req.Params.GetMeta())
-
-	span := trace.SpanContextFromContext(ctx)
-	log.Printf("Server======Trace ID: %s, Span ID: %s", span.TraceID().String(), span.SpanID().String())
-	if err := parseArguments(req.Params.Arguments, &args); err != nil {
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Invalid arguments: %v", err)}},
-		}, nil
-	}
-
-	count := 1
-	if args.Count != nil {
-		count = *args.Count
-	}
-
-	if count <= 0 || count > 100 {
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: "Count must be between 1 and 100"}},
-		}, nil
-	}
-
-	var results []interface{}
-
-	for i := 0; i < count; i++ {
-		switch args.Type {
-		case "number":
-			results = append(results, rand.Float64()*1000)
-		case "string":
-			// Generate random string
-			const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-			length := 5 + rand.Intn(10) // 5-14 characters
-			b := make([]byte, length)
-			for j := range b {
-				b[j] = charset[rand.Intn(len(charset))]
-			}
-			results = append(results, string(b))
-		case "boolean":
-			results = append(results, rand.Intn(2) == 1)
-		default:
-			return &mcp.CallToolResult{
-				IsError: true,
-				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Unknown type: %s", args.Type)}},
-			}, nil
-		}
-	}
-
-	response := fmt.Sprintf("Generated %d %s value(s): %v", count, args.Type, results)
-
-	return &mcp.CallToolResult{
-		IsError: false,
-		Content: []mcp.Content{&mcp.TextContent{Text: response}},
-	}, nil
-}
-
-// Serve starts the server
 func (s *ExampleServer) Serve(ctx context.Context) error {
 	// Create stdio transport
 	transport := mcp.StdioTransport{}
 
 	log.Println("🚀 Starting example MCP server with OpenTelemetry...")
 	log.Println("📊 OpenTelemetry traces and metrics will be exported")
-	log.Println("🔧 Available tools: test-tool, calculator, data-processor, random-generator, last9-telemetry")
+	log.Println("🔧 Available tools: test-tool, calculator, data-processor, random-generator, http-api-call, last9-telemetry")
 
 	return s.wrapper.Serve(ctx, &transport)
 }
@@ -425,4 +264,241 @@ func main() {
 	}
 
 	log.Println("👋 Server shutdown complete")
+}
+
+// handler versions for RegisterInstrumentedTool
+func (s *ExampleServer) handleTestTool(ctx context.Context, req *mcp.CallToolRequest, args TestToolArgs) (*mcp.CallToolResult, interface{}, error) {
+	// Simulate delay if requested
+	if args.Delay != nil && *args.Delay > 0 {
+		time.Sleep(time.Duration(*args.Delay) * time.Millisecond)
+	}
+
+	// Simulate error if requested
+	if args.Error != nil && *args.Error {
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: "Simulated error as requested"}},
+		}, nil, nil
+	}
+
+	response := fmt.Sprintf("Echo: %s (processed at %s)", args.Message, time.Now().Format("15:04:05"))
+
+	return &mcp.CallToolResult{
+		IsError: false,
+		Content: []mcp.Content{&mcp.TextContent{Text: response}},
+	}, nil, nil
+}
+
+func (s *ExampleServer) handleCalculator(ctx context.Context, req *mcp.CallToolRequest, args CalculatorArgs) (*mcp.CallToolResult, interface{}, error) {
+	var result float64
+
+	switch args.Operation {
+	case "add":
+		result = args.A + args.B
+	case "subtract":
+		result = args.A - args.B
+	case "multiply":
+		result = args.A * args.B
+	case "divide":
+		if args.B == 0 {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: "Division by zero is not allowed"}},
+			}, nil, nil
+		}
+		result = args.A / args.B
+	default:
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Unknown operation: %s", args.Operation)}},
+		}, nil, nil
+	}
+
+	response := fmt.Sprintf("%.2f %s %.2f = %.2f", args.A, args.Operation, args.B, result)
+
+	return &mcp.CallToolResult{
+		IsError: false,
+		Content: []mcp.Content{&mcp.TextContent{Text: response}},
+	}, nil, nil
+}
+
+func (s *ExampleServer) handleDataProcessor(ctx context.Context, req *mcp.CallToolRequest, args DataProcessorArgs) (*mcp.CallToolResult, interface{}, error) {
+	var response string
+
+	switch args.Operation {
+	case "count":
+		response = fmt.Sprintf("Array contains %d items", len(args.Data))
+	case "reverse":
+		reversed := make([]string, len(args.Data))
+		for i, v := range args.Data {
+			reversed[len(args.Data)-1-i] = v
+		}
+		response = fmt.Sprintf("Reversed: %v", reversed)
+	case "sort":
+		// Simple bubble sort for demonstration
+		sorted := make([]string, len(args.Data))
+		copy(sorted, args.Data)
+		for i := 0; i < len(sorted); i++ {
+			for j := 0; j < len(sorted)-1-i; j++ {
+				if sorted[j] > sorted[j+1] {
+					sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
+				}
+			}
+		}
+		response = fmt.Sprintf("Sorted: %v", sorted)
+	case "uppercase":
+		uppercased := make([]string, len(args.Data))
+		for i, v := range args.Data {
+			uppercased[i] = strings.ToUpper(v)
+		}
+		response = fmt.Sprintf("Uppercased: %v", uppercased)
+	default:
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Unknown operation: %s", args.Operation)}},
+		}, nil, nil
+	}
+
+	return &mcp.CallToolResult{
+		IsError: false,
+		Content: []mcp.Content{&mcp.TextContent{Text: response}},
+	}, nil, nil
+}
+
+type RandomGeneratorArgs struct {
+	Type  string `json:"type"`
+	Count *int   `json:"count,omitempty"`
+}
+
+func (s *ExampleServer) handleRandomGenerator(ctx context.Context, req *mcp.CallToolRequest, args RandomGeneratorArgs) (*mcp.CallToolResult, interface{}, error) {
+	log.Printf("Meta Data in Random Generator: %+v", req.Params.GetMeta())
+
+	span := trace.SpanContextFromContext(ctx)
+	log.Printf("Server======Trace ID: %s, Span ID: %s", span.TraceID().String(), span.SpanID().String())
+
+	count := 1
+	if args.Count != nil {
+		count = *args.Count
+	}
+
+	if count <= 0 || count > 100 {
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: "Count must be between 1 and 100"}},
+		}, nil, nil
+	}
+
+	var results []interface{}
+
+	for i := 0; i < count; i++ {
+		switch args.Type {
+		case "number":
+			results = append(results, rand.Float64()*1000)
+		case "string":
+			// Generate random string
+			const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+			length := 5 + rand.Intn(10) // 5-14 characters
+			b := make([]byte, length)
+			for j := range b {
+				b[j] = charset[rand.Intn(len(charset))]
+			}
+			results = append(results, string(b))
+		case "boolean":
+			results = append(results, rand.Intn(2) == 1)
+		default:
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Unknown type: %s", args.Type)}},
+			}, nil, nil
+		}
+	}
+
+	response := fmt.Sprintf("Generated %d %s value(s): %v", count, args.Type, results)
+
+	return &mcp.CallToolResult{
+		IsError: false,
+		Content: []mcp.Content{&mcp.TextContent{Text: response}},
+	}, nil, nil
+}
+
+// HTTPAPIArgs represents arguments for the HTTP API tool
+type HTTPAPIArgs struct {
+	URL     string `json:"url"`
+	Method  string `json:"method"`
+	Timeout *int   `json:"timeout,omitempty"` // Optional timeout in seconds
+}
+
+// handleHTTPAPICall demonstrates HTTP tracing by making external API calls
+func (s *ExampleServer) handleHTTPAPICall(ctx context.Context, req *mcp.CallToolRequest, args HTTPAPIArgs) (*mcp.CallToolResult, interface{}, error) {
+	// Set default timeout
+	timeout := 10 * time.Second
+	if args.Timeout != nil && *args.Timeout > 0 {
+		timeout = time.Duration(*args.Timeout) * time.Second
+	}
+
+	// Example 1: Using WithHTTPTracing middleware (recommended)
+	client := last9mcp.WithHTTPTracing(&http.Client{
+		Timeout: timeout,
+	})
+
+	// Alternative examples (commented out):
+	// Example 2: Using NewTracedHTTPClient
+	// client := last9mcp.NewTracedHTTPClient(timeout)
+
+	// Example 3: Using WithHTTPTracingOptions for custom span names
+	// client := last9mcp.WithHTTPTracingOptions(&http.Client{Timeout: timeout},
+	//     otelhttp.WithSpanNameFormatter(func(operation string, r *http.Request) string {
+	//         return fmt.Sprintf("External API: %s %s", r.Method, r.URL.Host)
+	//     }),
+	// )
+
+	// Create the HTTP request
+	httpReq, err := http.NewRequestWithContext(ctx, args.Method, args.URL, nil)
+	if err != nil {
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to create request: %v", err)}},
+		}, nil, nil
+	}
+
+	// Set some headers
+	httpReq.Header.Set("User-Agent", "MCP-Go-SDK-Example/1.0")
+	httpReq.Header.Set("Accept", "application/json")
+
+	// Log trace info for debugging
+	span := trace.SpanContextFromContext(ctx)
+	log.Printf("HTTP Tool - Trace ID: %s, Span ID: %s, Making %s request to %s",
+		span.TraceID().String(), span.SpanID().String(), args.Method, args.URL)
+
+	// Make the traced HTTP request
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("HTTP request failed: %v", err)}},
+		}, nil, nil
+	}
+	defer resp.Body.Close()
+
+	// Read response body (limit to 1KB for demo)
+	body := make([]byte, 1024)
+	n, _ := resp.Body.Read(body)
+	bodyStr := string(body[:n])
+	if n == 1024 {
+		bodyStr += "... (truncated)"
+	}
+
+	response := fmt.Sprintf(`HTTP %s %s
+Status: %d %s
+Content-Length: %s
+Content-Type: %s
+
+Body:
+%s`, args.Method, args.URL, resp.StatusCode, resp.Status,
+		resp.Header.Get("Content-Length"), resp.Header.Get("Content-Type"), bodyStr)
+
+	return &mcp.CallToolResult{
+		IsError: false,
+		Content: []mcp.Content{&mcp.TextContent{Text: response}},
+	}, nil, nil
 }
