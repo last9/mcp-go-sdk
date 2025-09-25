@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -62,6 +64,31 @@ type SessionBasedTraceStore struct {
 	mu       sync.RWMutex
 	cleanup  *time.Ticker
 }
+
+// Last9MCPServer with enhanced trace store
+type Last9MCPServer struct {
+	Server          *mcp.Server
+	serverName      string
+	serverTransport string
+	tracer          trace.Tracer
+	meter           metric.Meter
+	traceStore      *SessionBasedTraceStore
+
+	// Metrics instruments
+	callCounter  metric.Int64Counter
+	callDuration metric.Float64Histogram
+	errorCounter metric.Int64Counter
+
+	// Client management (simplified from HubManager)
+	currentClientID string // for stdio compatibility
+	mu              sync.RWMutex
+
+	// Disconnect handling
+	transportCtx    context.Context
+	transportCancel context.CancelFunc
+	disconnectChan  chan string
+}
+
 
 // NewSessionBasedTraceStore creates a new trace store with automatic cleanup
 func NewSessionBasedTraceStore() *SessionBasedTraceStore {
@@ -267,30 +294,6 @@ func (s *SessionBasedTraceStore) cleanupStaleSessions() {
 	}
 }
 
-// Last9MCPServer with enhanced trace store
-type Last9MCPServer struct {
-	Server          *mcp.Server
-	serverName      string
-	serverTransport string
-	tracer          trace.Tracer
-	meter           metric.Meter
-	traceStore      *SessionBasedTraceStore
-
-	// Metrics instruments
-	callCounter  metric.Int64Counter
-	callDuration metric.Float64Histogram
-	errorCounter metric.Int64Counter
-
-	// Client management (simplified from HubManager)
-	currentClientID string // for stdio compatibility
-	mu              sync.RWMutex
-
-	// Disconnect handling
-	transportCtx    context.Context
-	transportCancel context.CancelFunc
-	disconnectChan  chan string
-}
-
 // parseArguments helper function (unchanged from original)
 func parseArguments(arguments any, target interface{}) error {
 	switch args := arguments.(type) {
@@ -329,7 +332,7 @@ func mapServerTransport(transport mcp.Transport) string {
 // initOpenTelemetry sets up OpenTelemetry SDK (fixed error handling)
 func initOpenTelemetry(serviceName, version string) error {
 	ctx := context.Background()
-	traceExp, err := otlptracehttp.New(ctx, otlptracehttp.WithInsecure())
+	traceExp, err := otlptracehttp.New(ctx)
 	if err != nil {
 		return fmt.Errorf("creating trace exporter: %w", err)
 	}
@@ -355,7 +358,7 @@ func initOpenTelemetry(serviceName, version string) error {
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
-	metricExp, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithInsecure())
+	metricExp, err := otlpmetrichttp.New(ctx)
 	if err != nil {
 		return fmt.Errorf("creating metric exporter: %w", err)
 	}
@@ -684,46 +687,46 @@ func (s *Last9MCPServer) extractQueryInfo(ctr *mcp.CallToolRequest) QueryInfo {
 	return queryInfo
 }
 
-// RegisterInstrumentedTool with enhanced instrumentation
-func (w *Last9MCPServer) RegisterInstrumentedTool(name string, tool mcp.Tool, handler mcp.ToolHandler) {
-	instrumentedHandler := w.instrumentHandler(name, handler)
-	w.Server.AddTool(&tool, instrumentedHandler)
+// RegisterInstrumentedTool registers a typed tool handler with instrumentation
+func RegisterInstrumentedTool[In, Out any](server *Last9MCPServer, tool *mcp.Tool, handler mcp.ToolHandlerFor[In,
+	Out],
+) error {
+	instrumentedHandler := instrumentHandler(server, handler)
+	mcp.AddTool(server.Server, tool, instrumentedHandler)
+	return nil
 }
 
 // Enhanced tool handler instrumentation
-func (w *Last9MCPServer) instrumentHandler(toolName string, originalHandler mcp.ToolHandler) mcp.ToolHandler {
-	return func(ctx context.Context, mcpReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func instrumentHandler[In, Out any](server *Last9MCPServer, originalHandler mcp.ToolHandlerFor[In, Out]) func(ctx context.Context, mcpReq *mcp.CallToolRequest, args In) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, mcpReq *mcp.CallToolRequest, args In) (*mcp.CallToolResult, any, error) {
 		span := trace.SpanFromContext(ctx)
 		clientID := ctx.Value("clientID").(string)
 		clientInfo := ctx.Value("clientInfo").(ClientInfo)
 
 		span.SetAttributes(
-			attribute.String("mcp.server.transport", w.serverTransport),
+			attribute.String("mcp.server.transport", server.serverTransport),
 			attribute.String("client.name", clientInfo.Name),
 			attribute.String("client.id", clientID),
 		)
 
-		// Parse and add parameters
-		var p interface{}
-		if err := parseArguments(mcpReq.Params.Arguments, &p); err == nil {
-			w.addParamsToSpan(span, p)
-		}
+		server.addParamsToSpan(span, args)
 
+		toolName := mcpReq.Params.Name
 		startTime := time.Now()
 		metricAttrs := []attribute.KeyValue{
 			attribute.String("tool_name", toolName),
-			attribute.String("server_transport", w.serverTransport),
+			attribute.String("server_transport", server.serverTransport),
 			attribute.String("client_name", clientInfo.Name),
 		}
 
-		w.callCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+		server.callCounter.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
 
 		// Call original handler
-		result, err := originalHandler(ctx, mcpReq)
+		result, out, err := originalHandler(ctx, mcpReq, args)
 
 		// Record metrics and span status
 		duration := time.Since(startTime)
-		w.callDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(metricAttrs...))
+		server.callDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(metricAttrs...))
 
 		success := err == nil && (result == nil || !result.IsError)
 		if success {
@@ -731,7 +734,7 @@ func (w *Last9MCPServer) instrumentHandler(toolName string, originalHandler mcp.
 			span.SetAttributes(attribute.String("mcp.result.status", "success"))
 		} else {
 			errorAttrs := append(metricAttrs, attribute.String("error_type", "tool_error"))
-			w.errorCounter.Add(ctx, 1, metric.WithAttributes(errorAttrs...))
+			server.errorCounter.Add(ctx, 1, metric.WithAttributes(errorAttrs...))
 			span.SetStatus(codes.Error, "Tool call failed")
 			span.SetAttributes(attribute.String("mcp.result.status", "error"))
 
@@ -758,7 +761,7 @@ func (w *Last9MCPServer) instrumentHandler(toolName string, originalHandler mcp.
 		log.Printf("🏁 [%s] Completed tool call: %s (duration: %v, success: %v)",
 			clientInfo.Name, toolName, duration, success)
 
-		return result, err
+		return result, out, err
 	}
 }
 
@@ -959,4 +962,67 @@ func (w *Last9MCPServer) Shutdown(ctx context.Context) error {
 
 	log.Println("✅ MCP server shutdown complete")
 	return nil
+}
+
+// HTTP Tracing Middleware Functions
+
+// WithHTTPTracing wraps an HTTP client with OpenTelemetry instrumentation.
+// This allows HTTP requests made from tool handlers to be automatically traced
+// and appear as child spans of the tool execution.
+//
+// Usage in tool handlers:
+//   client := last9mcp.WithHTTPTracing(&http.Client{Timeout: 10 * time.Second})
+//   resp, err := client.Get("https://api.example.com/data")
+func WithHTTPTracing(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+
+	// Create a copy of the client to avoid modifying the original
+	tracedClient := &http.Client{
+		Transport:     otelhttp.NewTransport(client.Transport),
+		CheckRedirect: client.CheckRedirect,
+		Jar:           client.Jar,
+		Timeout:       client.Timeout,
+	}
+
+	return tracedClient
+}
+
+// NewTracedHTTPClient creates a new HTTP client with OpenTelemetry tracing enabled.
+// This is a convenience function for creating a fresh HTTP client with tracing.
+//
+// Usage in tool handlers:
+//   client := last9mcp.NewTracedHTTPClient(30 * time.Second)
+//   resp, err := client.Get("https://api.example.com/data")
+func NewTracedHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+		Timeout:   timeout,
+	}
+}
+
+// WithHTTPTracingOptions wraps an HTTP client with OpenTelemetry instrumentation
+// and allows customization of the tracing behavior through options.
+//
+// Usage in tool handlers:
+//   client := last9mcp.WithHTTPTracingOptions(&http.Client{},
+//       otelhttp.WithSpanNameFormatter(func(operation string, r *http.Request) string {
+//           return fmt.Sprintf("API Call: %s %s", r.Method, r.URL.Path)
+//	  }),
+//   )
+func WithHTTPTracingOptions(client *http.Client, opts ...otelhttp.Option) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+
+	// Create a copy of the client to avoid modifying the original
+	tracedClient := &http.Client{
+		Transport:     otelhttp.NewTransport(client.Transport, opts...),
+		CheckRedirect: client.CheckRedirect,
+		Jar:           client.Jar,
+		Timeout:       client.Timeout,
+	}
+
+	return tracedClient
 }
