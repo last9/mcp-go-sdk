@@ -89,7 +89,6 @@ type Last9MCPServer struct {
 	disconnectChan  chan string
 }
 
-
 // NewSessionBasedTraceStore creates a new trace store with automatic cleanup
 func NewSessionBasedTraceStore() *SessionBasedTraceStore {
 	store := &SessionBasedTraceStore{
@@ -430,6 +429,56 @@ func NewServer(serverName, version string) (*Last9MCPServer, error) {
 		traceStore:     NewSessionBasedTraceStore(),
 		disconnectChan: make(chan string, 10),
 	}
+
+	// Add enhanced telemetry tool with multi-client support
+	server.Server.AddTool(&mcp.Tool{
+		Name:        "last9-telemetry",
+		Description: "Must be called at the end of each user query to properly close trace spans. Critical for observability and multi-client trace isolation.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"query_summary": {
+					Type:        "string",
+					Description: "Optional summary of what was accomplished in this query",
+				},
+			},
+			Required: []string{},
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		clientID := ctx.Value("clientID").(string)
+		clientInfo := ctx.Value("clientInfo").(ClientInfo)
+
+		// End the current query for this specific client
+		ended := server.traceStore.EndQuery(clientID)
+
+		var message string
+		var summary string
+
+		// Extract query summary if provided
+		var args map[string]interface{}
+		if err := parseArguments(req.Params.Arguments, &args); err == nil {
+			if s, exists := args["query_summary"].(string); exists && s != "" {
+				summary = s
+			}
+		}
+
+		if ended {
+			if summary != "" {
+				message = fmt.Sprintf("Query trace ended for client %s. Summary: %s", clientInfo.Name, summary)
+			} else {
+				message = fmt.Sprintf("Query trace ended for client %s", clientInfo.Name)
+			}
+			log.Printf("🏁 [%s] Query trace ended with summary: %s", clientInfo.Name, summary)
+		} else {
+			message = fmt.Sprintf("No active query found for client %s", clientInfo.Name)
+			log.Printf("⚠️ [%s] No active query to end", clientInfo.Name)
+		}
+
+		return &mcp.CallToolResult{
+			IsError: false,
+			Content: []mcp.Content{&mcp.TextContent{Text: message}},
+		}, nil
+	})
 
 	server.Server.AddReceivingMiddleware(server.requestStartMiddleware)
 
@@ -800,56 +849,6 @@ func (w *Last9MCPServer) Serve(ctx context.Context, transport mcp.Transport) err
 
 	w.serverTransport = mapServerTransport(transport)
 
-	// Add enhanced telemetry tool with multi-client support
-	w.Server.AddTool(&mcp.Tool{
-		Name:        "last9-telemetry",
-		Description: "Must be called at the end of each user query to properly close trace spans. Critical for observability and multi-client trace isolation.",
-		InputSchema: &jsonschema.Schema{
-			Type: "object",
-			Properties: map[string]*jsonschema.Schema{
-				"query_summary": {
-					Type:        "string",
-					Description: "Optional summary of what was accomplished in this query",
-				},
-			},
-			Required: []string{},
-		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		clientID := ctx.Value("clientID").(string)
-		clientInfo := ctx.Value("clientInfo").(ClientInfo)
-
-		// End the current query for this specific client
-		ended := w.traceStore.EndQuery(clientID)
-
-		var message string
-		var summary string
-
-		// Extract query summary if provided
-		var args map[string]interface{}
-		if err := parseArguments(req.Params.Arguments, &args); err == nil {
-			if s, exists := args["query_summary"].(string); exists && s != "" {
-				summary = s
-			}
-		}
-
-		if ended {
-			if summary != "" {
-				message = fmt.Sprintf("Query trace ended for client %s. Summary: %s", clientInfo.Name, summary)
-			} else {
-				message = fmt.Sprintf("Query trace ended for client %s", clientInfo.Name)
-			}
-			log.Printf("🏁 [%s] Query trace ended with summary: %s", clientInfo.Name, summary)
-		} else {
-			message = fmt.Sprintf("No active query found for client %s", clientInfo.Name)
-			log.Printf("⚠️ [%s] No active query to end", clientInfo.Name)
-		}
-
-		return &mcp.CallToolResult{
-			IsError: false,
-			Content: []mcp.Content{&mcp.TextContent{Text: message}},
-		}, nil
-	})
-
 	err := w.Server.Run(w.transportCtx, transport)
 	if err != nil {
 		log.Printf("❌ MCP server encountered an error: %v", err)
@@ -971,8 +970,9 @@ func (w *Last9MCPServer) Shutdown(ctx context.Context) error {
 // and appear as child spans of the tool execution.
 //
 // Usage in tool handlers:
-//   client := last9mcp.WithHTTPTracing(&http.Client{Timeout: 10 * time.Second})
-//   resp, err := client.Get("https://api.example.com/data")
+//
+//	client := last9mcp.WithHTTPTracing(&http.Client{Timeout: 10 * time.Second})
+//	resp, err := client.Get("https://api.example.com/data")
 func WithHTTPTracing(client *http.Client) *http.Client {
 	if client == nil {
 		client = &http.Client{}
@@ -993,8 +993,9 @@ func WithHTTPTracing(client *http.Client) *http.Client {
 // This is a convenience function for creating a fresh HTTP client with tracing.
 //
 // Usage in tool handlers:
-//   client := last9mcp.NewTracedHTTPClient(30 * time.Second)
-//   resp, err := client.Get("https://api.example.com/data")
+//
+//	client := last9mcp.NewTracedHTTPClient(30 * time.Second)
+//	resp, err := client.Get("https://api.example.com/data")
 func NewTracedHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: otelhttp.NewTransport(http.DefaultTransport),
@@ -1006,11 +1007,12 @@ func NewTracedHTTPClient(timeout time.Duration) *http.Client {
 // and allows customization of the tracing behavior through options.
 //
 // Usage in tool handlers:
-//   client := last9mcp.WithHTTPTracingOptions(&http.Client{},
-//       otelhttp.WithSpanNameFormatter(func(operation string, r *http.Request) string {
-//           return fmt.Sprintf("API Call: %s %s", r.Method, r.URL.Path)
-//	  }),
-//   )
+//
+//	  client := last9mcp.WithHTTPTracingOptions(&http.Client{},
+//	      otelhttp.WithSpanNameFormatter(func(operation string, r *http.Request) string {
+//	          return fmt.Sprintf("API Call: %s %s", r.Method, r.URL.Path)
+//		  }),
+//	  )
 func WithHTTPTracingOptions(client *http.Client, opts ...otelhttp.Option) *http.Client {
 	if client == nil {
 		client = &http.Client{}
