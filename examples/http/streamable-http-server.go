@@ -16,7 +16,6 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.opentelemetry.io/otel/trace"
 
 	last9mcp "github.com/last9/mcp-go-sdk/mcp"
 )
@@ -230,9 +229,7 @@ func (s *HTTPMCPServer) Start(ctx context.Context, url string) error {
 		return err
 	}
 
-	// Create shutdown context with timeout
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	shutdownCtx := context.Background()
 	// Attempt graceful shutdown
 	if err := s.Shutdown(shutdownCtx); err != nil {
 		log.Printf("❌ Graceful shutdown failed: %v", err)
@@ -288,17 +285,22 @@ func (h *httpReadWriteCloser) Close() error {
 // Tool handlers
 
 func (s *HTTPMCPServer) handleWeather(ctx context.Context, req *mcp.CallToolRequest, args WeatherArgs) (*mcp.CallToolResult, interface{}, error) {
-	span := trace.SpanContextFromContext(ctx)
-	log.Printf("Weather Tool - Trace ID: %s, Location: %s", span.TraceID().String(), args.Location)
-
 	// Simulate API call with HTTP tracing
 	client := last9mcp.WithHTTPTracing(&http.Client{
 		Timeout: 10 * time.Second,
 	})
 
+	// create http request with context
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", "https://httpbin.org/json", nil)
+	if err != nil {
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to create request: %v", err)}},
+		}, nil, nil
+	}
+
 	// Mock weather API call (using httpbin for demonstration)
-	apiURL := fmt.Sprintf("https://httpbin.org/json")
-	resp, err := client.Get(apiURL)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return &mcp.CallToolResult{
 			IsError: true,
@@ -347,9 +349,15 @@ func (s *HTTPMCPServer) handleNews(ctx context.Context, req *mcp.CallToolRequest
 		Timeout: 15 * time.Second,
 	})
 
-	// Mock news API call (using JSONPlaceholder for demonstration)
-	apiURL := "https://jsonplaceholder.typicode.com/posts"
-	resp, err := client.Get(apiURL)
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", "https://jsonplaceholder.typicode.com/posts", nil)
+	if err != nil {
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to create request: %v", err)}},
+		}, nil, nil
+	}
+
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return &mcp.CallToolResult{
 			IsError: true,
@@ -386,10 +394,6 @@ func (s *HTTPMCPServer) handleNews(ctx context.Context, req *mcp.CallToolRequest
 }
 
 func (s *HTTPMCPServer) handleDatabase(ctx context.Context, req *mcp.CallToolRequest, args DatabaseArgs) (*mcp.CallToolResult, interface{}, error) {
-	// Simulate database query with tracing
-	span := trace.SpanContextFromContext(ctx)
-	log.Printf("Database Tool - Trace ID: %s, Query: %s", span.TraceID().String(), args.Query)
-
 	// Simulate query execution time
 	time.Sleep(time.Duration(50+rand.Intn(200)) * time.Millisecond)
 
@@ -440,7 +444,6 @@ func (s *HTTPMCPServer) handleDatabase(ctx context.Context, req *mcp.CallToolReq
 			"query_type":        "UNKNOWN",
 			"message":           "Query executed successfully",
 			"execution_time_ms": 10 + rand.Intn(50),
-			"query":             args.Query,
 			"params":            args.Params,
 		}
 	}
