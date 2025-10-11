@@ -29,10 +29,10 @@ docker-compose ps
 source .env
 
 # Build the server
-go build -o example-server server.go
+go build -o stdio-server stdio-server.go
 
 # Run the server
-./example-server
+./stdio-server
 ```
 
 ### 3. Configure Claude Desktop
@@ -43,7 +43,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
     "mcpServers": {
         "example-server": {
-            "command": "/absolute/path/to/example-server",
+            "command": "/absolute/path/to/stdio-server",
             "env": {
                 "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://localhost:4318/v1/traces",
                 "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://localhost:4318/v1/metrics",
