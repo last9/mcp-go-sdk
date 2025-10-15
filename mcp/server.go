@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -430,55 +429,7 @@ func NewServer(serverName, version string) (*Last9MCPServer, error) {
 		disconnectChan: make(chan string, 10),
 	}
 
-	// Add enhanced telemetry tool with multi-client support
-	server.Server.AddTool(&mcp.Tool{
-		Name:        "last9-telemetry",
-		Description: "Must be called at the end of each user query to properly close trace spans. Critical for observability and multi-client trace isolation.",
-		InputSchema: &jsonschema.Schema{
-			Type: "object",
-			Properties: map[string]*jsonschema.Schema{
-				"query_summary": {
-					Type:        "string",
-					Description: "Optional summary of what was accomplished in this query",
-				},
-			},
-			Required: []string{},
-		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		clientID := ctx.Value("clientID").(string)
-		clientInfo := ctx.Value("clientInfo").(ClientInfo)
-
-		// End the current query for this specific client
-		ended := server.traceStore.EndQuery(clientID)
-
-		var message string
-		var summary string
-
-		// Extract query summary if provided
-		var args map[string]interface{}
-		if err := parseArguments(req.Params.Arguments, &args); err == nil {
-			if s, exists := args["query_summary"].(string); exists && s != "" {
-				summary = s
-			}
-		}
-
-		if ended {
-			if summary != "" {
-				message = fmt.Sprintf("Query trace ended for client %s. Summary: %s", clientInfo.Name, summary)
-			} else {
-				message = fmt.Sprintf("Query trace ended for client %s", clientInfo.Name)
-			}
-			log.Printf("🏁 [%s] Query trace ended with summary: %s", clientInfo.Name, summary)
-		} else {
-			message = fmt.Sprintf("No active query found for client %s", clientInfo.Name)
-			log.Printf("⚠️ [%s] No active query to end", clientInfo.Name)
-		}
-
-		return &mcp.CallToolResult{
-			IsError: false,
-			Content: []mcp.Content{&mcp.TextContent{Text: message}},
-		}, nil
-	})
+	// Telemetry is now handled automatically via middleware - no separate tool needed
 
 	server.Server.AddReceivingMiddleware(server.requestStartMiddleware)
 
@@ -528,7 +479,23 @@ func (s *Last9MCPServer) requestStartMiddleware(next mcp.MethodHandler) mcp.Meth
 			defer span.End()
 		}
 
-		return next(ctx, method, req)
+		// Call the actual handler
+		result, err := next(ctx, method, req)
+
+		// Auto-telemetry: End traces when tools/list is called (indicates query completion)
+		if method == "tools/list" {
+			go s.scheduleAutoTelemetry(clientID, clientInfo)
+		}
+
+		return result, err
+	}
+}
+
+// scheduleAutoTelemetry automatically ends traces immediately after tool completion
+func (s *Last9MCPServer) scheduleAutoTelemetry(clientID string, clientInfo ClientInfo) {
+	// End the current query for this specific client
+	if ended := s.traceStore.EndQuery(clientID); ended {
+		log.Printf("🏁 Auto-ended query for client %s", clientInfo.Name)
 	}
 }
 
@@ -550,12 +517,7 @@ func (s *Last9MCPServer) handleTraceContext(ctx context.Context, method string, 
 	// Extract query information from tool arguments
 	queryInfo := s.extractQueryInfo(ctr)
 
-	// Handle explicit end-trace signal
-	if toolName == "last9-telemetry" {
-		ended := s.traceStore.EndQuery(clientID)
-		log.Printf("🏁 Query ended for client %s (had active query: %v)", clientInfo.Name, ended)
-		return ctx, nil
-	}
+	// Telemetry is now handled automatically via middleware
 
 	// Check if we have an active query context
 	if parentSpanCtx, queryID, exists := s.traceStore.GetQueryContext(clientID); exists {

@@ -203,9 +203,9 @@ func (s *Last9MCPServer) Serve(ctx context.Context, transport mcp.Transport) err
 func (s *Last9MCPServer) Shutdown(ctx context.Context) error
 ```
 
-## Built-in Tools
+## Automatic Telemetry
 
-The server automatically includes the `last9-telemetry` tool that clients should call at the end of each query to properly close trace spans and maintain trace isolation between queries.
+The server automatically handles trace lifecycle management without requiring manual telemetry tool calls. Traces are automatically ended when the client calls `tools/list`, ensuring proper trace isolation between queries.
 
 ## Observability Features
 
@@ -270,15 +270,15 @@ The SDK provides comprehensive error handling:
 
 ## Best Practices
 
-1. **Always call the telemetry tool**: Ensure clients call `last9-telemetry` at the end of each query for proper trace isolation.
+1. **Use structured arguments**: Define proper struct types for tool arguments to enable type safety and better observability.
 
-2. **Use structured arguments**: Define proper struct types for tool arguments to enable type safety and better observability.
+2. **Set meaningful service names**: Use descriptive service names that identify your server's purpose.
 
-3. **Set meaningful service names**: Use descriptive service names that identify your server's purpose.
+3. **Configure appropriate sampling**: For high-traffic servers, consider using ratio-based sampling to manage telemetry volume.
 
-4. **Configure appropriate sampling**: For high-traffic servers, consider using ratio-based sampling to manage telemetry volume.
+4. **Monitor client sessions**: Check logs for client connect/disconnect events to understand usage patterns.
 
-5. **Monitor client sessions**: Check logs for client connect/disconnect events to understand usage patterns.
+5. **Understand trace boundaries**: Traces automatically span from the first tool call until `tools/list` is called, grouping related tool calls together.
 
 ## Troubleshooting
 
@@ -288,7 +288,7 @@ The SDK provides comprehensive error handling:
 
 2. **High memory usage**: Check for stale client sessions; the SDK automatically cleans up after 30 minutes.
 
-3. **Missing trace correlation**: Ensure clients are calling the `last9-telemetry` tool at query completion.
+3. **Missing trace correlation**: Verify that `tools/list` calls are happening to trigger automatic trace completion.
 
 ### Debug Logging
 
