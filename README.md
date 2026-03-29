@@ -1,12 +1,13 @@
 # mcp-go-sdk
 
-Wrap your MCP server with OpenTelemetry. Get traces, metrics, and structured logs out of the box — without touching your business logic.
+Wrap your MCP server or client with OpenTelemetry. Get traces, metrics, and structured logs out of the box — without touching your business logic.
 
 ```go
 server, err := mcp.NewServer("my-server", "1.0.0")
+client, err := mcp.NewClient("my-agent", "1.0.0")
 ```
 
-That's the whole setup. Point `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` at your collector and you're done.
+Point `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` at your collector and you're done.
 
 ## Installation
 
@@ -158,6 +159,43 @@ func handleSearch(ctx context.Context, req *sdkmcp.CallToolRequest, args SearchA
 
 The outbound span becomes a child of the tool span. The full call chain — LLM turn → tool call → HTTP request — appears as one trace.
 
+## Client instrumentation
+
+If you're building an agent or orchestrator that calls MCP servers, instrument the client side the same way:
+
+```go
+client, err := mcp.NewClient("my-agent", "1.0.0")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Shutdown(context.Background())
+
+// Connect to any MCP server — stdio, SSE, or streamable HTTP.
+session, err := client.Connect(ctx, &sdkmcp.StdioTransport{}, nil)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Every RPC through the session is automatically instrumented.
+result, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
+    Name:      "search",
+    Arguments: args,
+})
+```
+
+Every `CallTool`, `ReadResource`, `GetPrompt`, and other RPC call produces a span with the same `gen_ai.*` and `mcp.*` attributes as the server side. The client span wraps the full round-trip, so you see total latency — not just server processing time.
+
+Server name and version are populated automatically from the initialize handshake.
+
+All the same options apply:
+
+```go
+client, err := mcp.NewClientWithOptions("my-agent", "1.0.0",
+    mcp.WithDisableArgCapture(),   // strip PII from tool call spans
+    mcp.WithSkipProviderInit(),    // use your app's existing OTel providers
+)
+```
+
 ## If your app already has OTel
 
 Use `WithSkipProviderInit` and the SDK picks up whatever is globally registered:
@@ -168,6 +206,9 @@ otel.SetTracerProvider(yourTracerProvider)
 otel.SetMeterProvider(yourMeterProvider)
 
 server, err := mcp.NewServerWithOptions("my-server", "1.0.0",
+    mcp.WithSkipProviderInit(),
+)
+client, err := mcp.NewClientWithOptions("my-agent", "1.0.0",
     mcp.WithSkipProviderInit(),
 )
 ```
