@@ -151,7 +151,8 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 		// First tool call in a new query — create a root query span, store its
 		// context, then immediately end it so only the tool span is active.
 		queryID := fmt.Sprintf("query_%s_%d", clientID, time.Now().UnixNano())
-		ctx, querySpan := s.tracer.Start(ctx, "mcp user_query",
+		var querySpan trace.Span
+		ctx, querySpan = s.tracer.Start(ctx, "mcp user_query",
 			trace.WithAttributes(
 				keyGenAISystem.String(genAISystem),
 				keyMCPSessionID.String(queryID),
