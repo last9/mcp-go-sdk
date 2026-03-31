@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (race detector)
+        run: go test -race -count=1 ./mcp/...
+
+  build-examples:
+    name: Build examples
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        example: [stdio, http, client]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build example
+        working-directory: examples/${{ matrix.example }}
+        run: go build ./...
