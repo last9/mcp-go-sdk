@@ -91,7 +91,7 @@ func TestHandleToolsCall_SpanHasGenAIAttributes(t *testing.T) {
 	s, exp := testInfra(t)
 	ctx := withTestClient(context.Background(), s, "c1", "cursor")
 
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "search"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "search"}}
 	if _, err := s.handleToolsCall(ctx, noop, req); err != nil {
 		t.Fatalf("handleToolsCall: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestHandleToolsCall_OperationStatusSuccess(t *testing.T) {
 	s, exp := testInfra(t)
 	ctx := withTestClient(context.Background(), s, "c1", "test-client")
 
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "ping"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "ping"}}
 	if _, err := s.handleToolsCall(ctx, noop, req); err != nil {
 		t.Fatalf("handleToolsCall: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestHandleToolsCall_OperationStatusError(t *testing.T) {
 	s, exp := testInfra(t)
 	ctx := withTestClient(context.Background(), s, "c1", "test-client")
 
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "fail"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "fail"}}
 	// errHandler returns an error — span should reflect mcp.operation.status=error
 	_, _ = s.handleToolsCall(ctx, errHandler, req)
 
@@ -176,11 +176,11 @@ func TestHandleToolsCall_QueryCorrelation_SameTraceID(t *testing.T) {
 	}
 
 	// First call — creates the root query span and stores it.
-	req1 := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "tool-a"}}
+	req1 := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "tool-a"}}
 	_, _ = s.handleToolsCall(makeCtx(), noop, req1)
 
 	// Second call — should re-use the stored query span (query correlation).
-	req2 := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "tool-b"}}
+	req2 := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "tool-b"}}
 	_, _ = s.handleToolsCall(makeCtx(), noop, req2)
 
 	allSpans := exp.GetSpans()
@@ -337,7 +337,7 @@ func TestInstrumentHandler_ArgCapture_Enabled(t *testing.T) {
 
 	// Build a tool span so there is an active span in context.
 	ctx, span := s.tracer.Start(ctx, "test-tool-span")
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "search"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "search"}}
 	_, _, _ = handler(ctx, req, Input{Query: "hello"})
 	span.End()
 
@@ -366,7 +366,7 @@ func TestInstrumentHandler_ArgCapture_Disabled(t *testing.T) {
 	})
 
 	ctx, span := s.tracer.Start(ctx, "test-tool-span")
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "sensitive"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "sensitive"}}
 	_, _, _ = handler(ctx, req, Input{Secret: "my-password"})
 	span.End()
 

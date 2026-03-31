@@ -213,7 +213,7 @@ func (c *Last9MCPClient) connInfo() (serverName, transport string) {
 
 func (c *Last9MCPClient) handleClientToolCall(ctx context.Context, next sdkmcp.MethodHandler, req sdkmcp.Request) (sdkmcp.Result, error) {
 	toolName := ""
-	if params, ok := req.GetParams().(*sdkmcp.CallToolParams); ok {
+	if params, ok := req.GetParams().(*sdkmcp.CallToolParamsRaw); ok {
 		toolName = params.Name
 	}
 

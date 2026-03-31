@@ -58,7 +58,7 @@ func clientErrHandler(_ context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Res
 func TestClientHandleToolCall_SpanHasGenAIAttributes(t *testing.T) {
 	c, exp := testClientInfra(t)
 
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "search"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "search"}}
 	if _, err := c.handleClientToolCall(context.Background(), clientNoop, req); err != nil {
 		t.Fatalf("handleClientToolCall: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestClientHandleToolCall_SpanHasGenAIAttributes(t *testing.T) {
 func TestClientHandleToolCall_OperationStatusSuccess(t *testing.T) {
 	c, exp := testClientInfra(t)
 
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "ping"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "ping"}}
 	if _, err := c.handleClientToolCall(context.Background(), clientNoop, req); err != nil {
 		t.Fatalf("handleClientToolCall: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestClientHandleToolCall_OperationStatusSuccess(t *testing.T) {
 func TestClientHandleToolCall_OperationStatusError(t *testing.T) {
 	c, exp := testClientInfra(t)
 
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{Name: "fail"}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "fail"}}
 	_, _ = c.handleClientToolCall(context.Background(), clientErrHandler, req)
 
 	spans := exp.GetSpans()
@@ -126,7 +126,7 @@ func TestClientHandleToolCall_EmptyToolName(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	// When the request carries no params (or nil Name), the span must still be created.
-	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParams{}}
+	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{}}
 	_, _ = c.handleClientToolCall(context.Background(), clientNoop, req)
 
 	spans := exp.GetSpans()
