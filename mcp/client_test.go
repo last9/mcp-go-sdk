@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -43,23 +42,13 @@ func testClientInfra(t *testing.T) (*Last9MCPClient, *tracetest.InMemoryExporter
 	return c, exp
 }
 
-// clientNoop is a MethodHandler that succeeds immediately.
-func clientNoop(_ context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Result, error) {
-	return &sdkmcp.CallToolResult{}, nil
-}
-
-// clientErrHandler is a MethodHandler that always fails.
-func clientErrHandler(_ context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Result, error) {
-	return nil, errors.New("downstream error")
-}
-
 // ── tools/call ────────────────────────────────────────────────────────────────
 
 func TestClientHandleToolCall_SpanHasGenAIAttributes(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "search"}}
-	if _, err := c.handleClientToolCall(context.Background(), clientNoop, req); err != nil {
+	if _, err := c.handleClientToolCall(context.Background(), noop, req); err != nil {
 		t.Fatalf("handleClientToolCall: %v", err)
 	}
 
@@ -92,7 +81,7 @@ func TestClientHandleToolCall_OperationStatusSuccess(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "ping"}}
-	if _, err := c.handleClientToolCall(context.Background(), clientNoop, req); err != nil {
+	if _, err := c.handleClientToolCall(context.Background(), noop, req); err != nil {
 		t.Fatalf("handleClientToolCall: %v", err)
 	}
 
@@ -110,7 +99,7 @@ func TestClientHandleToolCall_OperationStatusError(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "fail"}}
-	_, _ = c.handleClientToolCall(context.Background(), clientErrHandler, req)
+	_, _ = c.handleClientToolCall(context.Background(), errHandler, req)
 
 	spans := exp.GetSpans()
 	for _, sp := range spans {
@@ -127,7 +116,7 @@ func TestClientHandleToolCall_EmptyToolName(t *testing.T) {
 
 	// When the request carries no params (or nil Name), the span must still be created.
 	req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{}}
-	_, _ = c.handleClientToolCall(context.Background(), clientNoop, req)
+	_, _ = c.handleClientToolCall(context.Background(), noop, req)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
@@ -141,7 +130,7 @@ func TestClientHandleResourceRead_SpanAttributes(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.ReadResourceRequest{Params: &sdkmcp.ReadResourceParams{URI: "file:///data.txt"}}
-	if _, err := c.handleClientResourceRead(context.Background(), clientNoop, req); err != nil {
+	if _, err := c.handleClientResourceRead(context.Background(), noop, req); err != nil {
 		t.Fatalf("handleClientResourceRead: %v", err)
 	}
 
@@ -162,7 +151,7 @@ func TestClientHandleResourceRead_URINotCaptured_WhenDisabled(t *testing.T) {
 	c.cfg.captureResourceBody = false
 
 	req := &sdkmcp.ReadResourceRequest{Params: &sdkmcp.ReadResourceParams{URI: "secret:///pii"}}
-	_, _ = c.handleClientResourceRead(context.Background(), clientNoop, req)
+	_, _ = c.handleClientResourceRead(context.Background(), noop, req)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
@@ -177,7 +166,7 @@ func TestClientHandleResourceRead_OperationStatusError(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.ReadResourceRequest{Params: &sdkmcp.ReadResourceParams{URI: "file:///x"}}
-	_, _ = c.handleClientResourceRead(context.Background(), clientErrHandler, req)
+	_, _ = c.handleClientResourceRead(context.Background(), errHandler, req)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
@@ -192,7 +181,7 @@ func TestClientHandlePromptGet_SpanAttributes(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.GetPromptRequest{Params: &sdkmcp.GetPromptParams{Name: "system-prompt"}}
-	if _, err := c.handleClientPromptGet(context.Background(), clientNoop, req); err != nil {
+	if _, err := c.handleClientPromptGet(context.Background(), noop, req); err != nil {
 		t.Fatalf("handleClientPromptGet: %v", err)
 	}
 
@@ -212,7 +201,7 @@ func TestClientHandlePromptGet_SpanName_IncludesPromptName(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.GetPromptRequest{Params: &sdkmcp.GetPromptParams{Name: "greeting"}}
-	_, _ = c.handleClientPromptGet(context.Background(), clientNoop, req)
+	_, _ = c.handleClientPromptGet(context.Background(), noop, req)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
@@ -228,7 +217,7 @@ func TestClientHandlePromptGet_OperationStatusError(t *testing.T) {
 	c, exp := testClientInfra(t)
 
 	req := &sdkmcp.GetPromptRequest{Params: &sdkmcp.GetPromptParams{Name: "bad"}}
-	_, _ = c.handleClientPromptGet(context.Background(), clientErrHandler, req)
+	_, _ = c.handleClientPromptGet(context.Background(), errHandler, req)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
@@ -242,7 +231,7 @@ func TestClientHandlePromptGet_OperationStatusError(t *testing.T) {
 func TestClientHandleSimpleOp_SetsOperationStatusSuccess(t *testing.T) {
 	c, exp := testClientInfra(t)
 
-	_, _ = c.handleClientSimpleOp(context.Background(), clientNoop, opToolsList, nil)
+	_, _ = c.handleClientSimpleOp(context.Background(), noop, opToolsList, nil)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
@@ -254,7 +243,7 @@ func TestClientHandleSimpleOp_SetsOperationStatusSuccess(t *testing.T) {
 func TestClientHandleSimpleOp_SetsOperationStatusError(t *testing.T) {
 	c, exp := testClientInfra(t)
 
-	_, _ = c.handleClientSimpleOp(context.Background(), clientErrHandler, opToolsList, nil)
+	_, _ = c.handleClientSimpleOp(context.Background(), errHandler, opToolsList, nil)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
@@ -266,7 +255,7 @@ func TestClientHandleSimpleOp_SetsOperationStatusError(t *testing.T) {
 func TestClientHandleSimpleOp_SpanName(t *testing.T) {
 	c, exp := testClientInfra(t)
 
-	_, _ = c.handleClientSimpleOp(context.Background(), clientNoop, opInitialize, nil)
+	_, _ = c.handleClientSimpleOp(context.Background(), noop, opInitialize, nil)
 
 	spans := exp.GetSpans()
 	if len(spans) == 0 {

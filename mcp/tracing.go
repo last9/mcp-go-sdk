@@ -29,10 +29,9 @@ type ClientInfo struct {
 
 // storedQuery holds a stored trace span context for an in-flight query.
 type storedQuery struct {
-	spanCtx      trace.SpanContext
-	queryID      string
-	lastUsed     time.Time
-	active       bool
+	spanCtx  trace.SpanContext
+	queryID  string
+	lastUsed time.Time
 }
 
 // clientSession tracks per-client state: identity info and active query spans.
@@ -48,6 +47,7 @@ type sessionStore struct {
 	sessions map[string]*clientSession
 	mu       sync.RWMutex
 	cleanup  *time.Ticker
+	done     chan struct{}
 	cfg      *config
 	logger   *slog.Logger
 }
@@ -56,6 +56,7 @@ func newSessionStore(cfg *config, logger *slog.Logger) *sessionStore {
 	s := &sessionStore{
 		sessions: make(map[string]*clientSession),
 		cleanup:  time.NewTicker(5 * time.Minute),
+		done:     make(chan struct{}),
 		cfg:      cfg,
 		logger:   logger,
 	}
@@ -64,8 +65,13 @@ func newSessionStore(cfg *config, logger *slog.Logger) *sessionStore {
 }
 
 func (s *sessionStore) runCleanup() {
-	for range s.cleanup.C {
-		s.cleanupStale()
+	for {
+		select {
+		case <-s.cleanup.C:
+			s.cleanupStale()
+		case <-s.done:
+			return
+		}
 	}
 }
 
@@ -113,7 +119,6 @@ func (s *sessionStore) storeQuery(clientID, queryID string, spanCtx trace.SpanCo
 		spanCtx:  spanCtx,
 		queryID:  queryID,
 		lastUsed: time.Now(),
-		active:   true,
 	}
 	sess.lastActivity = time.Now()
 	sess.mu.Unlock()
@@ -136,7 +141,7 @@ func (s *sessionStore) latestQuery(clientID string) (trace.SpanContext, string, 
 	var latest *storedQuery
 	var latestID string
 	for id, q := range sess.activeQueries {
-		if q.active && (latest == nil || q.lastUsed.After(latest.lastUsed)) {
+		if latest == nil || q.lastUsed.After(latest.lastUsed) {
 			latest = q
 			latestID = id
 		}
@@ -161,13 +166,9 @@ func (s *sessionStore) endQuery(clientID string) bool {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 
-	ended := false
-	for id, q := range sess.activeQueries {
-		if q.active {
-			q.active = false
-			delete(sess.activeQueries, id)
-			ended = true
-		}
+	ended := len(sess.activeQueries) > 0
+	for id := range sess.activeQueries {
+		delete(sess.activeQueries, id)
 	}
 	if ended {
 		sess.lastActivity = time.Now()
@@ -224,11 +225,10 @@ func (s *sessionStore) cleanupStale() {
 		sess.mu.Lock()
 		activeCount := 0
 		for id, q := range sess.activeQueries {
-			if q.active && q.lastUsed.Before(queryCutoff) {
-				q.active = false
+			if q.lastUsed.Before(queryCutoff) {
 				delete(sess.activeQueries, id)
 				s.logger.Debug("mcp stale query ended", "client.id", clientID, "query.id", id)
-			} else if q.active {
+			} else {
 				activeCount++
 			}
 		}

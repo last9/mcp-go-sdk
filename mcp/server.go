@@ -33,7 +33,6 @@ type Last9MCPServer struct {
 	serverTransport string
 
 	tracer  trace.Tracer
-	meter   metric.Meter
 	logger  *slog.Logger
 	sessions *sessionStore
 	inst    *instruments
@@ -92,9 +91,7 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 	}
 
 	tracer := otel.Tracer(serverName)
-	meter := otel.Meter(serverName)
-
-	inst, err := initInstruments(meter)
+	inst, err := initInstruments(otel.Meter(serverName))
 	if err != nil {
 		return nil, fmt.Errorf("initializing metric instruments: %w", err)
 	}
@@ -105,7 +102,6 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 		serverName:     serverName,
 		serverVersion:  version,
 		tracer:         tracer,
-		meter:          meter,
 		logger:         logger,
 		sessions:       newSessionStore(cfg, logger),
 		inst:           inst,
@@ -250,8 +246,9 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 	if s.transportCancel != nil {
 		s.transportCancel()
 	}
-	if s.sessions != nil && s.sessions.cleanup != nil {
+	if s.sessions != nil {
 		s.sessions.cleanup.Stop()
+		close(s.sessions.done)
 	}
 
 	s.mu.Lock()
@@ -294,6 +291,6 @@ func mapServerTransport(t sdkmcp.Transport) string {
 	case *sdkmcp.SSEServerTransport:
 		return "sse"
 	default:
-		return "stdio"
+		return "unknown"
 	}
 }

@@ -14,6 +14,19 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// finalizeSpan sets the canonical span status and mcp.operation.status attribute.
+// Used by every handler except tools/call, which inspects CallToolResult.IsError.
+func finalizeSpan(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.SetAttributes(keyMCPOperationStatus.String(statusError))
+	} else {
+		span.SetStatus(codes.Ok, "")
+		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
+	}
+}
+
 // requestMiddleware is the single receiving middleware registered on the MCP
 // server. It dispatches each method to an operation-specific handler that
 // creates the correct span, records metrics, and emits structured log records.
@@ -184,9 +197,7 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	duration := time.Since(start)
 
 	s.inst.toolDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
-	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		baseAttrs(opToolsCall, s.serverTransport, info.Name)...,
-	))
+	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
 
 	success := err == nil
@@ -309,19 +320,9 @@ func (s *Last9MCPServer) handlePromptsGet(ctx context.Context, next sdkmcp.Metho
 
 	s.inst.promptGets.Add(ctx, 1, metric.WithAttributes(mAttrs...))
 	s.inst.promptDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
-	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		baseAttrs(opPromptsGet, s.serverTransport, info.Name)...,
-	))
+	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
-
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(keyMCPOperationStatus.String(statusError))
-	} else {
-		span.SetStatus(codes.Ok, "")
-		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
-	}
+	finalizeSpan(span, err)
 	return result, err
 }
 
@@ -363,15 +364,7 @@ func (s *Last9MCPServer) handleSamplingCreate(ctx context.Context, next sdkmcp.M
 	s.inst.samplingDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
 	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
 
-
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(keyMCPOperationStatus.String(statusError))
-	} else {
-		span.SetStatus(codes.Ok, "")
-		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
-	}
+	finalizeSpan(span, err)
 	return result, err
 }
 
@@ -398,14 +391,7 @@ func (s *Last9MCPServer) handleSimpleOp(ctx context.Context, next sdkmcp.MethodH
 		baseAttrs(method, s.serverTransport, info.Name)...,
 	))
 
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(keyMCPOperationStatus.String(statusError))
-	} else {
-		span.SetStatus(codes.Ok, "")
-		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
-	}
+	finalizeSpan(span, err)
 	return result, err
 }
 
@@ -434,9 +420,7 @@ func instrumentHandler[In, Out any](s *Last9MCPServer, original sdkmcp.ToolHandl
 			addArgsToSpan(span, args)
 		}
 
-		result, out, err := original(ctx, req, args)
-
-		return result, out, err
+		return original(ctx, req, args)
 	}
 }
 

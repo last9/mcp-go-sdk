@@ -27,12 +27,10 @@ import (
 // open a session. All RPC calls made through the returned ClientSession are
 // automatically instrumented via the sending middleware registered here.
 type Last9MCPClient struct {
-	Client        *sdkmcp.Client
-	clientName    string
-	clientVersion string
+	Client     *sdkmcp.Client
+	clientName string
 
 	tracer trace.Tracer
-	meter  metric.Meter
 	logger *slog.Logger
 	inst   *instruments
 	cfg    *config
@@ -86,21 +84,17 @@ func NewClientWithOptions(clientName, version string, opts ...Option) (*Last9MCP
 	}
 
 	tracer := otel.Tracer(clientName)
-	meter := otel.Meter(clientName)
-
-	inst, err := initInstruments(meter)
+	inst, err := initInstruments(otel.Meter(clientName))
 	if err != nil {
 		return nil, fmt.Errorf("initializing metric instruments: %w", err)
 	}
 
 	info := &sdkmcp.Implementation{Name: clientName, Version: version}
 	c := &Last9MCPClient{
-		Client:         sdkmcp.NewClient(info, nil),
-		clientName:     clientName,
-		clientVersion:  version,
-		tracer:         tracer,
-		meter:          meter,
-		logger:         logger,
+		Client:     sdkmcp.NewClient(info, nil),
+		clientName: clientName,
+		tracer:     tracer,
+		logger:     logger,
 		inst:           inst,
 		cfg:            cfg,
 		traceProvider:  tp,
@@ -242,9 +236,7 @@ func (c *Last9MCPClient) handleClientToolCall(ctx context.Context, next sdkmcp.M
 	duration := time.Since(start)
 
 	c.inst.toolDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
-	c.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		baseAttrs(opToolsCall, transport, c.clientName)...,
-	))
+	c.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
 	if err != nil {
 		span.RecordError(err)
@@ -345,18 +337,9 @@ func (c *Last9MCPClient) handleClientPromptGet(ctx context.Context, next sdkmcp.
 
 	c.inst.promptGets.Add(ctx, 1, metric.WithAttributes(mAttrs...))
 	c.inst.promptDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
-	c.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		baseAttrs(opPromptsGet, transport, c.clientName)...,
-	))
+	c.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(keyMCPOperationStatus.String(statusError))
-	} else {
-		span.SetStatus(codes.Ok, "")
-		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
-	}
+	finalizeSpan(span, err)
 	return result, err
 }
 
@@ -382,14 +365,7 @@ func (c *Last9MCPClient) handleClientSimpleOp(ctx context.Context, next sdkmcp.M
 		baseAttrs(method, transport, c.clientName)...,
 	))
 
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(keyMCPOperationStatus.String(statusError))
-	} else {
-		span.SetStatus(codes.Ok, "")
-		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
-	}
+	finalizeSpan(span, err)
 	return result, err
 }
 
