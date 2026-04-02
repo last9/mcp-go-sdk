@@ -88,11 +88,8 @@ func jsonFieldName(f reflect.StructField) string {
 // converting string values to their schema-expected types (int, float, bool).
 // It is a no-op when no registered fields need coercion or the arguments cannot
 // be parsed.
-//
-// Arguments is typed `any` in CallToolParams but holds a json.RawMessage after
-// the SDK unmarshals the wire JSON (see CallToolParams.UnmarshalJSON).
 func (r *toolTypeRegistry) coerceArgs(ctr *sdkmcp.CallToolRequest) {
-	if ctr.Params == nil || ctr.Params.Arguments == nil {
+	if ctr.Params == nil || len(ctr.Params.Arguments) == 0 {
 		return
 	}
 
@@ -103,13 +100,8 @@ func (r *toolTypeRegistry) coerceArgs(ctr *sdkmcp.CallToolRequest) {
 		return
 	}
 
-	raw, ok := ctr.Params.Arguments.(json.RawMessage)
-	if !ok {
-		return
-	}
-
 	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(ctr.Params.Arguments, &m); err != nil {
 		return
 	}
 
@@ -160,7 +152,7 @@ func (r *toolTypeRegistry) coerceArgs(ctr *sdkmcp.CallToolRequest) {
 	if err != nil {
 		return
 	}
-	ctr.Params.Arguments = json.RawMessage(data)
+	ctr.Params.Arguments = data
 }
 
 func isIntKind(k reflect.Kind) bool {

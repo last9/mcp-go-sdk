@@ -81,7 +81,7 @@ func TestRegister_HandlesPointerFields(t *testing.T) {
 
 func makeCallToolRequest(toolName string, argsJSON string) *sdkmcp.CallToolRequest {
 	return &sdkmcp.CallToolRequest{
-		Params: &sdkmcp.CallToolParams{
+		Params: &sdkmcp.CallToolParamsRaw{
 			Name:      toolName,
 			Arguments: json.RawMessage(argsJSON),
 		},
@@ -95,7 +95,7 @@ func TestCoerceArgs_StringToInt(t *testing.T) {
 	ctr := makeCallToolRequest("get_logs", `{"service":"api","lookback_minutes":"60","limit":"20"}`)
 	r.coerceArgs(ctr)
 
-	raw := ctr.Params.Arguments.(json.RawMessage)
+	raw := ctr.Params.Arguments
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestCoerceArgs_StringToBool(t *testing.T) {
 	ctr := makeCallToolRequest("test_tool", `{"service":"x","verbose":"true"}`)
 	r.coerceArgs(ctr)
 
-	raw := ctr.Params.Arguments.(json.RawMessage)
+	raw := ctr.Params.Arguments
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestCoerceArgs_StringToFloat(t *testing.T) {
 	ctr := makeCallToolRequest("test_tool", `{"service":"x","rate":"1.5"}`)
 	r.coerceArgs(ctr)
 
-	raw := ctr.Params.Arguments.(json.RawMessage)
+	raw := ctr.Params.Arguments
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestCoerceArgs_NoOpWhenTypesCorrect(t *testing.T) {
 	ctr := makeCallToolRequest("test_tool", original)
 	r.coerceArgs(ctr)
 
-	raw := ctr.Params.Arguments.(json.RawMessage)
+	raw := ctr.Params.Arguments
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestCoerceArgs_NoOpForUnregisteredTool(t *testing.T) {
 	ctr := makeCallToolRequest("unknown_tool", original)
 	r.coerceArgs(ctr)
 
-	raw := ctr.Params.Arguments.(json.RawMessage)
+	raw := ctr.Params.Arguments
 	if string(raw) != original {
 		t.Errorf("arguments were modified for unregistered tool: got %s", raw)
 	}
@@ -187,7 +187,7 @@ func TestCoerceArgs_InvalidStringNotCoerced(t *testing.T) {
 	ctr := makeCallToolRequest("test_tool", `{"service":"x","lookback_minutes":"abc"}`)
 	r.coerceArgs(ctr)
 
-	raw := ctr.Params.Arguments.(json.RawMessage)
+	raw := ctr.Params.Arguments
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestCoerceArgs_BoolOnlyExactStrings(t *testing.T) {
 	ctr := makeCallToolRequest("test_tool", `{"service":"x","verbose":"yes"}`)
 	r.coerceArgs(ctr)
 
-	raw := ctr.Params.Arguments.(json.RawMessage)
+	raw := ctr.Params.Arguments
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
@@ -221,7 +221,7 @@ func TestCoerceArgs_NilArguments(t *testing.T) {
 	register[sampleArgs](r, "test_tool")
 
 	ctr := &sdkmcp.CallToolRequest{
-		Params: &sdkmcp.CallToolParams{
+		Params: &sdkmcp.CallToolParamsRaw{
 			Name:      "test_tool",
 			Arguments: nil,
 		},
