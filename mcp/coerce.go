@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"encoding/json"
-	"log"
 	"reflect"
 	"strconv"
 	"strings"
@@ -142,7 +141,6 @@ func (r *toolTypeRegistry) coerceArgs(ctr *sdkmcp.CallToolRequest) {
 				changed = true
 			}
 		case kind == reflect.Bool:
-			// Only coerce exact "true" / "false" to avoid surprising conversions.
 			switch strings.ToLower(str) {
 			case "true":
 				m[field] = true
@@ -163,15 +161,14 @@ func (r *toolTypeRegistry) coerceArgs(ctr *sdkmcp.CallToolRequest) {
 		return
 	}
 	ctr.Params.Arguments = json.RawMessage(data)
-	log.Printf("coerced string arguments for tool %s", ctr.Params.Name)
 }
 
 func isIntKind(k reflect.Kind) bool {
-	return k >= reflect.Int && k <= reflect.Int64
+	return k == reflect.Int || k == reflect.Int8 || k == reflect.Int16 || k == reflect.Int32 || k == reflect.Int64
 }
 
 func isUintKind(k reflect.Kind) bool {
-	return k >= reflect.Uint && k <= reflect.Uint64
+	return k == reflect.Uint || k == reflect.Uint8 || k == reflect.Uint16 || k == reflect.Uint32 || k == reflect.Uint64
 }
 
 func isFloatKind(k reflect.Kind) bool {

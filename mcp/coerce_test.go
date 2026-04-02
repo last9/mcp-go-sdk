@@ -101,14 +101,12 @@ func TestCoerceArgs_StringToInt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// After coercion, lookback_minutes should be a number, not a string
 	if v, ok := m["lookback_minutes"].(float64); !ok || v != 60 {
 		t.Errorf("lookback_minutes: got %v (%T), want 60 (float64)", m["lookback_minutes"], m["lookback_minutes"])
 	}
 	if v, ok := m["limit"].(float64); !ok || v != 20 {
 		t.Errorf("limit: got %v (%T), want 20 (float64)", m["limit"], m["limit"])
 	}
-	// string field should remain untouched
 	if v := m["service"]; v != "api" {
 		t.Errorf("service: got %v, want 'api'", v)
 	}
@@ -158,7 +156,6 @@ func TestCoerceArgs_NoOpWhenTypesCorrect(t *testing.T) {
 	ctr := makeCallToolRequest("test_tool", original)
 	r.coerceArgs(ctr)
 
-	// Arguments should be unchanged (still json.RawMessage with same content)
 	raw := ctr.Params.Arguments.(json.RawMessage)
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -177,7 +174,6 @@ func TestCoerceArgs_NoOpForUnregisteredTool(t *testing.T) {
 	ctr := makeCallToolRequest("unknown_tool", original)
 	r.coerceArgs(ctr)
 
-	// Should be untouched
 	raw := ctr.Params.Arguments.(json.RawMessage)
 	if string(raw) != original {
 		t.Errorf("arguments were modified for unregistered tool: got %s", raw)
@@ -188,7 +184,6 @@ func TestCoerceArgs_InvalidStringNotCoerced(t *testing.T) {
 	r := newToolTypeRegistry()
 	register[sampleArgs](r, "test_tool")
 
-	// "abc" can't be parsed as int — should remain a string
 	ctr := makeCallToolRequest("test_tool", `{"service":"x","lookback_minutes":"abc"}`)
 	r.coerceArgs(ctr)
 
@@ -207,7 +202,6 @@ func TestCoerceArgs_BoolOnlyExactStrings(t *testing.T) {
 	r := newToolTypeRegistry()
 	register[sampleArgs](r, "test_tool")
 
-	// "yes" should NOT be coerced to true
 	ctr := makeCallToolRequest("test_tool", `{"service":"x","verbose":"yes"}`)
 	r.coerceArgs(ctr)
 
@@ -233,7 +227,6 @@ func TestCoerceArgs_NilArguments(t *testing.T) {
 		},
 	}
 
-	// Should not panic
 	r.coerceArgs(ctr)
 }
 
