@@ -86,6 +86,11 @@ type Last9MCPServer struct {
 	transportCtx    context.Context
 	transportCancel context.CancelFunc
 	disconnectChan  chan string
+
+	// toolTypes holds schema-derived type information for each registered tool,
+	// enabling automatic coercion of mistyped arguments (e.g. string "60" → int 60)
+	// before the go-sdk's strict JSON Schema validation runs.
+	toolTypes *toolTypeRegistry
 }
 
 // NewSessionBasedTraceStore creates a new trace store with automatic cleanup
@@ -427,6 +432,7 @@ func NewServer(serverName, version string) (*Last9MCPServer, error) {
 		meter:          meter,
 		traceStore:     NewSessionBasedTraceStore(),
 		disconnectChan: make(chan string, 10),
+		toolTypes:      newToolTypeRegistry(),
 	}
 
 	// Telemetry is now handled automatically via middleware - no separate tool needed
@@ -477,6 +483,14 @@ func (s *Last9MCPServer) requestStartMiddleware(next mcp.MethodHandler) mcp.Meth
 		ctx, span := s.handleTraceContext(ctx, method, req, clientID)
 		if span != nil {
 			defer span.End()
+		}
+
+		// Coerce mistyped arguments (e.g. string "60" → int 60) before the
+		// go-sdk's strict JSON Schema validation runs.
+		if method == "tools/call" {
+			if ctr, ok := req.(*mcp.CallToolRequest); ok {
+				s.toolTypes.coerceArgs(ctr)
+			}
 		}
 
 		// Call the actual handler
@@ -698,10 +712,13 @@ func (s *Last9MCPServer) extractQueryInfo(ctr *mcp.CallToolRequest) QueryInfo {
 	return queryInfo
 }
 
-// RegisterInstrumentedTool registers a typed tool handler with instrumentation
+// RegisterInstrumentedTool registers a typed tool handler with instrumentation.
+// It also records the In type's field types so that mistyped arguments from LLMs
+// (e.g. string "60" where int is expected) can be coerced before validation.
 func RegisterInstrumentedTool[In, Out any](server *Last9MCPServer, tool *mcp.Tool, handler mcp.ToolHandlerFor[In,
 	Out],
 ) error {
+	register[In](server.toolTypes, tool.Name)
 	instrumentedHandler := instrumentHandler(server, handler)
 	mcp.AddTool(server.Server, tool, instrumentedHandler)
 	return nil
