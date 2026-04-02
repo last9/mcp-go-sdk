@@ -1,0 +1,9 @@
+# Compiled Go binaries
+examples/client/client-example
+examples/http/streamable-http-example
+examples/stdio/sce
+
+# Generic Go build output
+*.exe
+*.test
+*.out
