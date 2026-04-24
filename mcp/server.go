@@ -221,14 +221,11 @@ func (s *Last9MCPServer) handleClientDisconnect(clientID string) {
 	s.sessions.forceRemove(context.Background(), clientID)
 
 	// Use context.Background() — transportCtx may already be cancelled at this
-	// point (H4), and a cancelled context silently discards metric writes.
+	// point, and a cancelled context silently discards OTel writes.
 	s.inst.activeSessions.Add(context.Background(), -1, metric.WithAttributes(
 		keyMCPServerTransport.String(s.serverTransport),
 		keyMCPClientName.String(info.Name),
 	))
-
-	// context.Background() mirrors the metric write above — transportCtx may
-	// already be cancelled at disconnect time, which would silently drop the log.
 	s.logger.InfoContext(context.Background(), "mcp client disconnected", "client.id", clientID, "client.name", info.Name)
 }
 
