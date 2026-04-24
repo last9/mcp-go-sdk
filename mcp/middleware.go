@@ -89,12 +89,6 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	info := s.extractClientInfo(req)
 	clientID := s.generateClientID(info)
 
-	s.sessions.create(ctx, clientID, info)
-	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(
-		keyMCPServerTransport.String(s.serverTransport),
-		keyMCPClientName.String(info.Name),
-	))
-
 	ctx = context.WithValue(ctx, contextKeyClientID, clientID)
 	ctx = context.WithValue(ctx, contextKeyClientInfo, info)
 
@@ -107,6 +101,8 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 		s.mu.Unlock()
 	}
 
+	// Start span before creating the session so that the session-created log
+	// and the client-connected log both carry the active trace/span ID.
 	ctx, span := s.tracer.Start(ctx, spanName(opInitialize),
 		trace.WithAttributes(
 			keyGenAISystem.String(genAISystem),
@@ -119,6 +115,12 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 		),
 	)
 	defer span.End()
+
+	s.sessions.create(ctx, clientID, info)
+	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(
+		keyMCPServerTransport.String(s.serverTransport),
+		keyMCPClientName.String(info.Name),
+	))
 
 	s.logger.InfoContext(ctx, "mcp client connected",
 		"client.id", clientID,
