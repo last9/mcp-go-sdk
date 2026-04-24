@@ -199,7 +199,6 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	s.inst.toolDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
 	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
-
 	success := err == nil
 	if cr, ok := result.(*sdkmcp.CallToolResult); ok && cr != nil {
 		success = success && !cr.IsError
@@ -271,7 +270,6 @@ func (s *Last9MCPServer) handleResourcesRead(ctx context.Context, next sdkmcp.Me
 	s.inst.resourceReads.Add(ctx, 1, metric.WithAttributes(mAttrs...))
 	s.inst.resourceDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
 	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
-
 
 	if err != nil {
 		span.RecordError(err)

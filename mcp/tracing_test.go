@@ -213,7 +213,7 @@ func TestSessionStore_CleanupStale_RemovesExpiredSessions(t *testing.T) {
 	s.create(context.Background(), "stale-client", ClientInfo{Name: "stale"})
 
 	time.Sleep(5 * time.Millisecond) // ensure past timeout
-	s.cleanupStale()
+	s.cleanupStale(context.Background())
 
 	_, ok := s.getInfo("stale-client")
 	if ok {
@@ -238,7 +238,7 @@ func TestSessionStore_CleanupStale_KeepsActiveSession(t *testing.T) {
 	s.storeQuery("active-client", "q1", sc)
 
 	time.Sleep(5 * time.Millisecond)
-	s.cleanupStale() // session lastActivity is old but has an active query
+	s.cleanupStale(context.Background()) // session lastActivity is old but has an active query
 
 	_, ok := s.getInfo("active-client")
 	if !ok {

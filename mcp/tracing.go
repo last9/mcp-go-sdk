@@ -66,10 +66,11 @@ func newSessionStore(cfg *config, logger *slog.Logger) *sessionStore {
 }
 
 func (s *sessionStore) runCleanup() {
+	ctx := context.Background()
 	for {
 		select {
 		case <-s.cleanup.C:
-			s.cleanupStale()
+			s.cleanupStale(ctx)
 		case <-s.done:
 			return
 		}
@@ -201,7 +202,7 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) {
 	}
 }
 
-func (s *sessionStore) cleanupStale() {
+func (s *sessionStore) cleanupStale(ctx context.Context) {
 	now := time.Now()
 	sessionCutoff := now.Add(-s.cfg.sessionTimeout)
 	queryCutoff := now.Add(-s.cfg.queryTimeout)
@@ -228,7 +229,7 @@ func (s *sessionStore) cleanupStale() {
 		for id, q := range sess.activeQueries {
 			if q.lastUsed.Before(queryCutoff) {
 				delete(sess.activeQueries, id)
-				s.logger.DebugContext(context.Background(), "mcp stale query ended", "client.id", clientID, "query.id", id)
+				s.logger.DebugContext(ctx, "mcp stale query ended", "client.id", clientID, "query.id", id)
 			} else {
 				activeCount++
 			}
@@ -241,7 +242,7 @@ func (s *sessionStore) cleanupStale() {
 			// Re-check that this is still the same session pointer before deleting.
 			if s.sessions[clientID] == sess {
 				delete(s.sessions, clientID)
-				s.logger.DebugContext(context.Background(), "mcp stale session removed", "client.id", clientID)
+				s.logger.DebugContext(ctx, "mcp stale session removed", "client.id", clientID)
 			}
 			s.mu.Unlock()
 		}
