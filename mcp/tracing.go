@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -75,7 +76,7 @@ func (s *sessionStore) runCleanup() {
 	}
 }
 
-func (s *sessionStore) create(clientID string, info ClientInfo) {
+func (s *sessionStore) create(ctx context.Context, clientID string, info ClientInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[clientID] = &clientSession{
@@ -83,7 +84,7 @@ func (s *sessionStore) create(clientID string, info ClientInfo) {
 		activeQueries: make(map[string]*storedQuery),
 		lastActivity:  time.Now(),
 	}
-	s.logger.Info("mcp session created",
+	s.logger.InfoContext(ctx, "mcp session created",
 		"client.id", clientID,
 		"client.name", info.Name,
 		"client.version", info.Version,
@@ -188,7 +189,7 @@ func (s *sessionStore) allClientIDs() []string {
 }
 
 // forceRemove immediately removes a client session and all its queries.
-func (s *sessionStore) forceRemove(clientID string) {
+func (s *sessionStore) forceRemove(ctx context.Context, clientID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess, ok := s.sessions[clientID]; ok {
@@ -196,7 +197,7 @@ func (s *sessionStore) forceRemove(clientID string) {
 		sess.activeQueries = make(map[string]*storedQuery)
 		sess.mu.Unlock()
 		delete(s.sessions, clientID)
-		s.logger.Info("mcp session removed", "client.id", clientID)
+		s.logger.InfoContext(ctx, "mcp session removed", "client.id", clientID)
 	}
 }
 
@@ -227,7 +228,7 @@ func (s *sessionStore) cleanupStale() {
 		for id, q := range sess.activeQueries {
 			if q.lastUsed.Before(queryCutoff) {
 				delete(sess.activeQueries, id)
-				s.logger.Debug("mcp stale query ended", "client.id", clientID, "query.id", id)
+				s.logger.DebugContext(context.Background(), "mcp stale query ended", "client.id", clientID, "query.id", id)
 			} else {
 				activeCount++
 			}
@@ -240,7 +241,7 @@ func (s *sessionStore) cleanupStale() {
 			// Re-check that this is still the same session pointer before deleting.
 			if s.sessions[clientID] == sess {
 				delete(s.sessions, clientID)
-				s.logger.Debug("mcp stale session removed", "client.id", clientID)
+				s.logger.DebugContext(context.Background(), "mcp stale session removed", "client.id", clientID)
 			}
 			s.mu.Unlock()
 		}

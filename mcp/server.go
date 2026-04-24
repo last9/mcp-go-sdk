@@ -114,7 +114,7 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 
 	s.Server.AddReceivingMiddleware(s.requestMiddleware)
 
-	logger.Info("mcp server initialised",
+	logger.InfoContext(ctx, "mcp server initialised",
 		"server.name", serverName,
 		"server.version", version,
 	)
@@ -218,7 +218,7 @@ func (s *Last9MCPServer) handleClientDisconnect(clientID string) {
 	}
 	s.mu.Unlock()
 
-	s.sessions.forceRemove(clientID)
+	s.sessions.forceRemove(context.Background(), clientID)
 
 	// Use context.Background() — transportCtx may already be cancelled at this
 	// point (H4), and a cancelled context silently discards metric writes.
@@ -227,7 +227,9 @@ func (s *Last9MCPServer) handleClientDisconnect(clientID string) {
 		keyMCPClientName.String(info.Name),
 	))
 
-	s.logger.Info("mcp client disconnected", "client.id", clientID, "client.name", info.Name)
+	// context.Background() mirrors the metric write above — transportCtx may
+	// already be cancelled at disconnect time, which would silently drop the log.
+	s.logger.InfoContext(context.Background(), "mcp client disconnected", "client.id", clientID, "client.name", info.Name)
 }
 
 func (s *Last9MCPServer) handleServerShutdown() {

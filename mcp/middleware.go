@@ -89,7 +89,7 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	info := s.extractClientInfo(req)
 	clientID := s.generateClientID(info)
 
-	s.sessions.create(clientID, info)
+	s.sessions.create(ctx, clientID, info)
 	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(
 		keyMCPServerTransport.String(s.serverTransport),
 		keyMCPClientName.String(info.Name),

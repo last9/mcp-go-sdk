@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"testing"
@@ -25,7 +26,7 @@ func newTestStore(t *testing.T) *sessionStore {
 func TestSessionStore_CreateAndGetInfo(t *testing.T) {
 	s := newTestStore(t)
 	info := ClientInfo{Name: "claude", Version: "3.0", Transport: "stdio"}
-	s.create("c1", info)
+	s.create(context.Background(), "c1", info)
 
 	got, ok := s.getInfo("c1")
 	if !ok {
@@ -49,7 +50,7 @@ func TestSessionStore_GetInfo_Missing(t *testing.T) {
 
 func TestSessionStore_StoreAndRetrieveQuery(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "test"})
+	s.create(context.Background(), "c1", ClientInfo{Name: "test"})
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -82,7 +83,7 @@ func TestSessionStore_LatestQuery_NoSession(t *testing.T) {
 
 func TestSessionStore_LatestQuery_NoQueries(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "test"})
+	s.create(context.Background(), "c1", ClientInfo{Name: "test"})
 	_, _, ok := s.latestQuery("c1")
 	if ok {
 		t.Error("expected latestQuery to return false when no queries stored")
@@ -91,7 +92,7 @@ func TestSessionStore_LatestQuery_NoQueries(t *testing.T) {
 
 func TestSessionStore_LatestQuery_ReturnsNewest(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "test"})
+	s.create(context.Background(), "c1", ClientInfo{Name: "test"})
 
 	old := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{1},
@@ -122,7 +123,7 @@ func TestSessionStore_LatestQuery_ReturnsNewest(t *testing.T) {
 
 func TestSessionStore_EndQuery_ClearsActive(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "test"})
+	s.create(context.Background(), "c1", ClientInfo{Name: "test"})
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{1},
@@ -151,8 +152,8 @@ func TestSessionStore_EndQuery_MissingSession(t *testing.T) {
 
 func TestSessionStore_ForceRemove(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "test"})
-	s.forceRemove("c1")
+	s.create(context.Background(), "c1", ClientInfo{Name: "test"})
+	s.forceRemove(context.Background(), "c1")
 
 	_, ok := s.getInfo("c1")
 	if ok {
@@ -163,13 +164,13 @@ func TestSessionStore_ForceRemove(t *testing.T) {
 func TestSessionStore_ForceRemove_NoOp(t *testing.T) {
 	s := newTestStore(t)
 	// Should not panic on unknown client
-	s.forceRemove("nonexistent")
+	s.forceRemove(context.Background(), "nonexistent")
 }
 
 func TestSessionStore_AllClientIDs(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "a"})
-	s.create("c2", ClientInfo{Name: "b"})
+	s.create(context.Background(), "c1", ClientInfo{Name: "a"})
+	s.create(context.Background(), "c2", ClientInfo{Name: "b"})
 
 	ids := s.allClientIDs()
 	if len(ids) != 2 {
@@ -209,7 +210,7 @@ func TestSessionStore_CleanupStale_RemovesExpiredSessions(t *testing.T) {
 		sessionTimeout: time.Millisecond,
 		queryTimeout:   time.Millisecond,
 	}
-	s.create("stale-client", ClientInfo{Name: "stale"})
+	s.create(context.Background(), "stale-client", ClientInfo{Name: "stale"})
 
 	time.Sleep(5 * time.Millisecond) // ensure past timeout
 	s.cleanupStale()
@@ -227,7 +228,7 @@ func TestSessionStore_CleanupStale_KeepsActiveSession(t *testing.T) {
 		sessionTimeout: time.Millisecond,
 		queryTimeout:   time.Hour, // query not expired
 	}
-	s.create("active-client", ClientInfo{Name: "active"})
+	s.create(context.Background(), "active-client", ClientInfo{Name: "active"})
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{1},
 		SpanID:     trace.SpanID{1},
@@ -247,7 +248,7 @@ func TestSessionStore_CleanupStale_KeepsActiveSession(t *testing.T) {
 
 func TestSessionStore_StoreQuery_ConcurrentSafe(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "test"})
+	s.create(context.Background(), "c1", ClientInfo{Name: "test"})
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{1},
@@ -269,7 +270,7 @@ func TestSessionStore_StoreQuery_ConcurrentSafe(t *testing.T) {
 
 func TestSessionStore_LatestQuery_ConcurrentSafe(t *testing.T) {
 	s := newTestStore(t)
-	s.create("c1", ClientInfo{Name: "test"})
+	s.create(context.Background(), "c1", ClientInfo{Name: "test"})
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{1},
