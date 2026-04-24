@@ -1,0 +1,29 @@
+# GoReleaser configuration for mcp-go-sdk
+# Docs: https://goreleaser.com
+#
+# This is a library — no binaries to ship. GoReleaser creates the GitHub
+# release with a changelog so `go get` users see clean version history.
+
+version: 2
+
+builds:
+  - skip: true
+
+checksum:
+  disable: true
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch

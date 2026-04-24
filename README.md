@@ -1,17 +1,15 @@
-# MCP Go SDK with OpenTelemetry Integration
+# mcp-go-sdk
 
-A Go SDK for building [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers with built-in OpenTelemetry observability features. This SDK provides enhanced tracing, metrics, and session management for multi-client MCP server deployments.
+MCP servers are black boxes. You ship one, an LLM starts calling it, and you have no idea what's happening inside — which tools fire, how long they take, what fails, why. That's not acceptable in production.
 
-## Features
+This library fixes it. Wrap your server or client with two lines and get full OpenTelemetry observability: traces, metrics, structured logs — all correlated, all standard.
 
-- **OpenTelemetry Integration**: Built-in distributed tracing and metrics collection
-- **Process-based Client Handling**: Enhanced support for client process management and lifecycle tracking
-- **Parent-Child Trace Relationships**: Hierarchical trace context for stdio transport connections
-- **Multi-Client Session Management**: Support for multiple concurrent clients with isolated trace contexts
-- **Enhanced Middleware**: Request/response instrumentation with detailed telemetry
-- **Automatic Trace Context Propagation**: Cross-tool call trace correlation with proper span management
-- **Graceful Disconnect Handling**: Automatic cleanup of client sessions and traces
-- **Configurable Telemetry Export**: OTLP HTTP endpoint support for traces and metrics
+```go
+server, err := mcp.NewServer("my-server", "1.0.0")
+client, err := mcp.NewClient("my-agent", "1.0.0")
+```
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` and you're done. No configuration files, no boilerplate, no instrumentation scattered across your handlers.
 
 ## Installation
 
@@ -19,42 +17,7 @@ A Go SDK for building [Model Context Protocol (MCP)](https://modelcontextprotoco
 go get github.com/last9/mcp-go-sdk
 ```
 
-## Environment Variables
-
-Configure OpenTelemetry and server behavior using these environment variables:
-
-### Required Environment Variables
-
-```bash
-# OpenTelemetry OTLP Endpoints
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
-OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics
-
-# Service identification
-OTEL_SERVICE_NAME=your-mcp-server
-OTEL_SERVICE_VERSION=1.0.0
-```
-
-### Optional Environment Variables
-
-```bash
-# Additional OTEL configuration
-OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production,service.instance.id=server-1
-OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer your-token
-
-# Sampling configuration
-OTEL_TRACES_SAMPLER=always_on
-# or OTEL_TRACES_SAMPLER=traceidratio
-# OTEL_TRACES_SAMPLER_ARG=0.1
-
-# Export intervals
-OTEL_METRIC_EXPORT_INTERVAL=10000  # milliseconds
-OTEL_BSP_EXPORT_TIMEOUT=30000      # milliseconds
-```
-
-## Quick Start
-
-### 1. Create Your Server
+## The thirty-second version
 
 ```go
 package main
@@ -63,245 +26,222 @@ import (
     "context"
     "log"
 
-    "github.com/google/jsonschema-go/jsonschema"
-    "github.com/modelcontextprotocol/go-sdk/mcp"
-    last9mcp "github.com/last9/mcp-go-sdk/mcp"
+    sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+    mcp "github.com/last9/mcp-go-sdk/mcp"
 )
 
+type SearchArgs struct {
+    Query string `json:"query"`
+    Limit int    `json:"limit,omitempty"`
+}
+
 func main() {
-    // Create the instrumented MCP server
-    server, err := last9mcp.NewServer("my-mcp-server", "1.0.0")
+    server, err := mcp.NewServer("search-server", "1.0.0")
     if err != nil {
-        log.Fatalf("Failed to create server: %v", err)
+        log.Fatal(err)
+    }
+    defer server.Shutdown(context.Background())
+
+    tool := &sdkmcp.Tool{
+        Name:        "search",
+        Description: "Search the knowledge base",
     }
 
-    // Register your tools
-    registerTools(server)
+    mcp.RegisterInstrumentedTool(server, tool, func(ctx context.Context, req *sdkmcp.CallToolRequest, args SearchArgs) (*sdkmcp.CallToolResult, any, error) {
+        // your logic here — untouched, unmodified
+        return &sdkmcp.CallToolResult{
+            Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "results..."}},
+        }, nil, nil
+    })
 
-    // Start the server
-    ctx := context.Background()
-    transport := &mcp.StdioTransport{}
-
-    if err := server.Serve(ctx, transport); err != nil {
-        log.Fatalf("Server error: %v", err)
+    if err := server.Serve(context.Background(), &sdkmcp.StdioTransport{}); err != nil {
+        log.Fatal(err)
     }
-}
-
-func registerTools(server *last9mcp.Last9MCPServer) {
-    tool := &mcp.Tool{
-        Name:        "hello-world",
-        Description: "A simple hello world tool",
-        InputSchema: &jsonschema.Schema{
-            Type: "object",
-            Properties: map[string]*jsonschema.Schema{
-                "name": {
-                    Type:        "string",
-                    Description: "Name to greet",
-                },
-            },
-            Required: []string{"name"},
-        },
-    }
-
-    last9mcp.RegisterInstrumentedTool(server, tool, handleHelloWorld)
-}
-
-type HelloWorldArgs struct {
-    Name string `json:"name"`
-}
-
-func handleHelloWorld(ctx context.Context, req *mcp.CallToolRequest, args HelloWorldArgs) (*mcp.CallToolResult, interface{}, error) {
-    return &mcp.CallToolResult{
-        IsError: false,
-        Content: []mcp.Content{&mcp.TextContent{Text: "Hello, " + args.Name + "!"}},
-    }, nil, nil
 }
 ```
 
-### 2. Set Environment Variables
+Your business logic stays exactly as it was. The instrumentation happens around it, not inside it.
 
-Create a `.env` file or export these variables:
+## What you actually get
+
+Every `tools/call`, `resources/read`, `prompts/get`, and `sampling/createMessage` produces a span named after the operation — `mcp tools/call search`, `mcp resources/read`, and so on — with attributes that follow the OpenTelemetry GenAI semantic conventions:
+
+```
+gen_ai.system            = mcp
+gen_ai.operation.name    = tools/call
+gen_ai.tool.name         = search
+mcp.tool.name            = search
+mcp.server.transport     = stdio
+mcp.client.name          = claude-desktop
+mcp.operation.status     = success | error
+```
+
+These aren't made-up attribute names. They're the emerging standard for AI observability, which means your traces compose with whatever else you're already shipping to your backend.
+
+### Query correlation
+
+When Claude calls three tools in a single reasoning turn, those are three separate RPC calls arriving at your server. Without correlation, you get three unrelated traces. That's useless.
+
+We track the query across calls. All tools invoked during the same LLM turn share a root `mcp user_query` span. One trace = one reasoning cycle. You see the whole sequence together, in order, with relative timing. That's how you actually debug what an LLM is doing.
+
+### Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `mcp.tool.calls.total` | Counter | Tool invocations |
+| `mcp.tool.call.duration.seconds` | Histogram | Tool latency |
+| `mcp.tool.errors.total` | Counter | Tool failures |
+| `mcp.resource.reads.total` | Counter | Resource reads |
+| `mcp.resource.read.duration.seconds` | Histogram | Resource read latency |
+| `mcp.prompt.gets.total` | Counter | Prompt fetches |
+| `mcp.prompt.get.duration.seconds` | Histogram | Prompt fetch latency |
+| `mcp.sampling.creates.total` | Counter | Sampling calls |
+| `mcp.sampling.create.duration.seconds` | Histogram | Sampling latency |
+| `mcp.server.request.duration.seconds` | Histogram | All operations |
+| `mcp.active.sessions` | Gauge | Connected clients right now |
+
+Flushed every 10 seconds. Histogram buckets are set to sensible defaults for LLM workloads — not the generic OTel defaults that make P99 charts useless.
+
+### Logs
+
+Every log line emitted through `log/slog` automatically carries `trace_id` and `span_id` pulled from context. When a tool fails, you don't grep through logs trying to figure out which trace it belonged to. You click the span, open the correlated logs, and you're there.
+
+## Environment variables
 
 ```bash
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
-export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics
-export OTEL_SERVICE_NAME=my-mcp-server
-export OTEL_SERVICE_VERSION=1.0.0
+# Where to send everything (one endpoint if your collector handles all signals)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+
+# Or per-signal if you need it
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://localhost:4318/v1/logs
+
+# Who you are
+OTEL_SERVICE_NAME=my-mcp-server
+OTEL_SERVICE_VERSION=1.0.0
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
 ```
 
-## Client Configuration
+Standard OTel conventions throughout. No proprietary configuration.
 
-### VSCode (with Continue extension)
+## Options
 
-Add to your VSCode `settings.json`:
+The defaults are good. You shouldn't need most of these. But they're here when you do.
 
-```json
-{
-    "continue.mcpServers": {
-        "your-server-name": {
-            "command": "/path/to/your/server/binary",
-            "env": {
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://localhost:4318/v1/traces",
-                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://localhost:4318/v1/metrics",
-                "OTEL_SERVICE_NAME": "your-mcp-server",
-                "OTEL_SERVICE_VERSION": "1.0.0"
-            }
-        }
-    }
+```go
+server, err := mcp.NewServerWithOptions("my-server", "1.0.0",
+    // Strip arguments and URIs from spans — right call for PII-sensitive deployments
+    mcp.WithDisableArgCapture(),
+    mcp.WithDisableResourceCapture(),
+    mcp.WithDisablePromptCapture(),
+    mcp.WithDisableSamplingCapture(),
+
+    // Skip entire operation families you don't use
+    mcp.WithDisableResources(),
+    mcp.WithDisablePrompts(),
+    mcp.WithDisableSampling(),
+
+    // Your app already initialized OTel — don't let us clobber it
+    mcp.WithSkipProviderInit(),
+
+    // How long before we consider a session or query dead
+    mcp.WithSessionTimeout(15 * time.Minute),
+    mcp.WithQueryTimeout(5 * time.Minute),
+
+    // Minimum severity that gets exported to OTel Logs
+    mcp.WithLogLevel(slog.LevelWarn),
+)
+```
+
+`WithSkipProviderInit` deserves a call-out. If your application already calls `otel.SetTracerProvider`, use this option. Without it we register our own global providers and you end up with two pipelines fighting each other. With it, we pick up yours and everything goes through one place.
+
+## Outbound HTTP
+
+Your tools probably make HTTP calls. Those calls should be children of the tool span, not invisible gaps in your trace. Pass the context and wrap the client:
+
+```go
+func handleSearch(ctx context.Context, req *sdkmcp.CallToolRequest, args SearchArgs) (*sdkmcp.CallToolResult, any, error) {
+    client := mcp.WithHTTPTracing(&http.Client{Timeout: 10 * time.Second})
+
+    httpReq, _ := http.NewRequestWithContext(ctx, "GET", "https://api.example.com/search", nil)
+    resp, err := client.Do(httpReq)
+    // ...
 }
 ```
 
-### Claude Desktop
+The full call chain — LLM reasoning turn → tool call → HTTP request — appears as one connected trace. That's what you need to find real latency bottlenecks.
 
-Add to your Claude Desktop configuration file:
+## Client instrumentation
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+Building an agent or orchestrator that calls MCP servers? Instrument the client the same way:
+
+```go
+client, err := mcp.NewClient("my-agent", "1.0.0")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Shutdown(context.Background())
+
+session, err := client.Connect(ctx, &sdkmcp.StdioTransport{}, nil)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Every call through the session is automatically traced
+result, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
+    Name:      "search",
+    Arguments: args,
+})
+```
+
+Client spans measure total round-trip latency — not just server processing time. Server name and version are populated automatically from the MCP initialize handshake. The same options apply:
+
+```go
+client, err := mcp.NewClientWithOptions("my-agent", "1.0.0",
+    mcp.WithDisableArgCapture(),
+    mcp.WithSkipProviderInit(),
+)
+```
+
+## If your app already has OTel
+
+Common case for mature services. Hand off your existing providers and we use them:
+
+```go
+otel.SetTracerProvider(yourTracerProvider)
+otel.SetMeterProvider(yourMeterProvider)
+
+server, err := mcp.NewServerWithOptions("my-server", "1.0.0",
+    mcp.WithSkipProviderInit(),
+)
+```
+
+No duplicate pipelines. No surprise exporter registrations. Your observability stack stays under your control.
+
+## Claude Desktop setup
+
+Point your server binary at a collector by setting env vars in the MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
     "mcpServers": {
-        "your-server-name": {
-            "command": "/path/to/your/server/binary",
+        "my-server": {
+            "command": "/path/to/your/binary",
             "env": {
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://localhost:4318/v1/traces",
-                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://localhost:4318/v1/metrics",
-                "OTEL_SERVICE_NAME": "your-mcp-server",
-                "OTEL_SERVICE_VERSION": "1.0.0"
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
+                "OTEL_SERVICE_NAME": "my-mcp-server"
             }
         }
     }
 }
 ```
 
-## API Reference
-
-### Server Creation
-
-```go
-func NewServer(serverName, version string) (*Last9MCPServer, error)
-```
-
-Creates a new instrumented MCP server with OpenTelemetry integration.
-
-### Tool Registration
-
-```go
-func RegisterInstrumentedTool[In, Out any](
-    server *Last9MCPServer,
-    tool *mcp.Tool,
-    handler mcp.ToolHandlerFor[In, Out],
-) error
-```
-
-Registers a tool with automatic instrumentation and type safety.
-
-### Server Methods
-
-```go
-func (s *Last9MCPServer) Serve(ctx context.Context, transport mcp.Transport) error
-func (s *Last9MCPServer) Shutdown(ctx context.Context) error
-```
-
-## Automatic Telemetry
-
-The server automatically handles trace lifecycle management without requiring manual telemetry tool calls. Traces are automatically ended when the client calls `tools/list`, ensuring proper trace isolation between queries.
-
-## Observability Features
-
-### Automatic Metrics
-
-- `mcp_tool_calls_total`: Total number of tool calls
-- `mcp_tool_call_duration_seconds`: Duration of tool calls
-- `mcp_tool_errors_total`: Total number of tool errors
-
-### Trace Attributes
-
-Each trace includes detailed attributes:
-- Client information (name, version, transport)
-- Process information and lifecycle events
-- Query context and correlation with parent-child relationships
-- Tool parameters and results
-- Error details and status codes
-
-### Session Management
-
-- Process-aware client session creation and cleanup
-- Automatic client session creation and cleanup
-- Query context isolation between clients with proper span management
-- Parent-child trace context propagation for stdio transport
-- Stale session cleanup (30 min timeout)
-- Graceful disconnect handling with process tracking
-
-## Development Setup
-
-1. **Start OpenTelemetry Collector** (optional, for local development):
-
-```bash
-# Using Docker
-docker run -p 4317:4317 -p 4318:4318 -p 8889:8889 \
-  -v $(pwd)/otel-collector.yaml:/etc/otelcol/config.yaml \
-  otel/opentelemetry-collector-contrib:latest
-```
-
-2. **Set up Jaeger** (for trace visualization):
-
-```bash
-docker run -d --name jaeger \
-  -p 16686:16686 \
-  -p 14250:14250 \
-  jaegertracing/all-in-one:latest
-```
-
-3. **Run your server**:
-
-```bash
-go run main.go
-```
-
-## Error Handling
-
-The SDK provides comprehensive error handling:
-
-- Automatic error metrics collection
-- Span status and error recording
-- Client disconnect detection and cleanup
-- Graceful degradation when telemetry endpoints are unavailable
-
-## Best Practices
-
-1. **Use structured arguments**: Define proper struct types for tool arguments to enable type safety and better observability.
-
-2. **Set meaningful service names**: Use descriptive service names that identify your server's purpose.
-
-3. **Configure appropriate sampling**: For high-traffic servers, consider using ratio-based sampling to manage telemetry volume.
-
-4. **Monitor client sessions**: Check logs for client connect/disconnect events to understand usage patterns.
-
-5. **Understand trace boundaries**: Traces automatically span from the first tool call until `tools/list` is called, grouping related tool calls together.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Traces not appearing**: Verify OTLP endpoint configuration and network connectivity.
-
-2. **High memory usage**: Check for stale client sessions; the SDK automatically cleans up after 30 minutes.
-
-3. **Missing trace correlation**: Verify that `tools/list` calls are happening to trigger automatic trace completion.
-
-### Debug Logging
-
-The server provides detailed logs for:
-- Client connections and disconnections
-- Query start and end events
-- Trace context propagation
-- Session cleanup activities
-
 ## Examples
 
-See the [example](./example) directory for a complete working implementation with multiple tools demonstrating various features of the SDK.
+- [stdio server](examples/stdio/) — calculator, data processor, random generator, outbound HTTP
+- [HTTP server](examples/http/) — streamable HTTP transport with weather, news, and database tools
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT
