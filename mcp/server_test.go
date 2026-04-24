@@ -43,7 +43,7 @@ func testInfra(t *testing.T) (*Last9MCPServer, *tracetest.InMemoryExporter) {
 // the client identity, mirroring what attachClientContext does at runtime.
 func withTestClient(ctx context.Context, s *Last9MCPServer, clientID, clientName string) context.Context {
 	info := ClientInfo{Name: clientName, Version: "1.0", Transport: "stdio"}
-	s.sessions.create(clientID, info)
+	s.sessions.create(context.Background(), clientID, info)
 	s.mu.Lock()
 	s.currentClientID = clientID
 	s.mu.Unlock()
@@ -132,7 +132,7 @@ func TestHandleToolsCall_QueryCorrelation_SameTraceID(t *testing.T) {
 	// Create the session once — re-creating would wipe stored query spans.
 	clientID := "c-corr"
 	info := ClientInfo{Name: "corr-client", Version: "1.0", Transport: "stdio"}
-	s.sessions.create(clientID, info)
+	s.sessions.create(context.Background(), clientID, info)
 	s.mu.Lock()
 	s.currentClientID = clientID
 	s.mu.Unlock()
