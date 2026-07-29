@@ -37,6 +37,9 @@ func (s *Last9MCPServer) requestMiddleware(next sdkmcp.MethodHandler) sdkmcp.Met
 		if method == opInitialize {
 			return s.handleInitialize(ctx, next, req)
 		}
+		if method == opServerDiscover {
+			return s.handleServerDiscover(ctx, next, req)
+		}
 
 		// Attach client identity to context for downstream handlers.
 		ctx = s.attachClientContext(ctx, req)
@@ -129,6 +132,38 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	)
 
 	return next(ctx, opInitialize, req)
+}
+
+// handleServerDiscover instruments the 2026-07-28 discover RPC and registers
+// the client session from per-request _meta (there is no initialize handshake).
+func (s *Last9MCPServer) handleServerDiscover(ctx context.Context, next sdkmcp.MethodHandler, req sdkmcp.Request) (sdkmcp.Result, error) {
+	info := s.clientInfoFromRequest(req)
+	clientID := s.stableClientID(info)
+	s.sessions.ensure(clientID, info)
+
+	ctx = context.WithValue(ctx, contextKeyClientID, clientID)
+	ctx = context.WithValue(ctx, contextKeyClientInfo, info)
+
+	ctx, span := s.tracer.Start(ctx, spanName(opServerDiscover),
+		trace.WithAttributes(
+			keyGenAISystem.String(genAISystem),
+			keyGenAIOperationName.String(opServerDiscover),
+			keyMCPServerName.String(s.serverName),
+			keyMCPServerVersion.String(s.serverVersion),
+			keyMCPClientName.String(info.Name),
+			keyMCPClientVersion.String(info.Version),
+			keyMCPClientID.String(clientID),
+		),
+	)
+	defer span.End()
+
+	s.logger.InfoContext(ctx, "mcp client discovered",
+		"client.id", clientID,
+		"client.name", info.Name,
+		"client.version", info.Version,
+	)
+
+	return next(ctx, opServerDiscover, req)
 }
 
 // handleToolsCall instruments a tools/call operation with full query correlation:
@@ -452,34 +487,93 @@ func addArgsToSpan(span trace.Span, args any) {
 	}
 }
 
-// attachClientContext looks up the stored client session and attaches client
-// identity to the context for use by downstream handlers.
-func (s *Last9MCPServer) attachClientContext(ctx context.Context, _ sdkmcp.Request) context.Context {
-	clientID := s.getCurrentClientID(ctx)
-	info, _ := s.sessions.getInfo(clientID)
+// attachClientContext extracts client identity from the request (_meta for
+// 2026-07-28, initialize params for legacy) and attaches it to the context.
+func (s *Last9MCPServer) attachClientContext(ctx context.Context, req sdkmcp.Request) context.Context {
+	if id, ok := ctx.Value(contextKeyClientID).(string); ok && id != "" {
+		if info, ok := ctx.Value(contextKeyClientInfo).(ClientInfo); ok && info.Name != "" {
+			return ctx
+		}
+	}
+
+	info := s.clientInfoFromRequest(req)
+	clientID := s.resolveClientID(ctx, info)
+	s.sessions.ensure(clientID, info)
+
 	ctx = context.WithValue(ctx, contextKeyClientID, clientID)
 	ctx = context.WithValue(ctx, contextKeyClientInfo, info)
 	return ctx
 }
 
-// extractClientInfo parses the initialize request for client identity fields.
-func (s *Last9MCPServer) extractClientInfo(req sdkmcp.Request) ClientInfo {
-	info := ClientInfo{Name: "unknown_client", Version: "unknown", Transport: "stdio"}
-	if p, ok := req.GetParams().(*sdkmcp.InitializeParams); ok {
-		info.Name = p.ClientInfo.Name
-		info.Version = p.ClientInfo.Version
-		if p.Capabilities != nil {
-			info.Capabilities = *p.Capabilities
+// clientInfoFromRequest reads client identity from per-request _meta
+// (2026-07-28) or legacy initialize params.
+func (s *Last9MCPServer) clientInfoFromRequest(req sdkmcp.Request) ClientInfo {
+	info := ClientInfo{Name: "unknown_client", Version: "unknown", Transport: s.serverTransport}
+
+	if peer, ok := req.(interface {
+		ClientInfo() *sdkmcp.Implementation
+		ClientCapabilities() *sdkmcp.ClientCapabilities
+	}); ok {
+		if impl := peer.ClientInfo(); impl != nil {
+			if impl.Name != "" {
+				info.Name = impl.Name
+			}
+			if impl.Version != "" {
+				info.Version = impl.Version
+			}
+		}
+		if caps := peer.ClientCapabilities(); caps != nil {
+			info.Capabilities = *caps
 		}
 	}
+
+	if info.Name == "unknown_client" {
+		if p, ok := req.GetParams().(*sdkmcp.InitializeParams); ok && p.ClientInfo.Name != "" {
+			info.Name = p.ClientInfo.Name
+			info.Version = p.ClientInfo.Version
+			if p.Capabilities != nil {
+				info.Capabilities = *p.Capabilities
+			}
+		}
+	}
+
 	return info
 }
 
-// generateClientID produces a stable client ID combining name, transport, and
-// process PID so stdio and HTTP clients can be distinguished.
+// extractClientInfo parses client identity for the legacy initialize handshake.
+func (s *Last9MCPServer) extractClientInfo(req sdkmcp.Request) ClientInfo {
+	return s.clientInfoFromRequest(req)
+}
+
+// generateClientID produces a unique client ID for a legacy initialize handshake.
 func (s *Last9MCPServer) generateClientID(info ClientInfo) string {
 	pid := os.Getpid()
 	return fmt.Sprintf("%s_%s_%d_%d", info.Name, info.Transport, pid, time.Now().UnixNano())
+}
+
+// stableClientID returns a deterministic ID for stateless per-request clients
+// that identify themselves via _meta on every call.
+func (s *Last9MCPServer) stableClientID(info ClientInfo) string {
+	if info.Name == "unknown_client" {
+		return "unknown_client"
+	}
+	return fmt.Sprintf("%s_%s_%s", info.Name, info.Version, info.Transport)
+}
+
+// resolveClientID picks the client ID for a non-initialize request.
+func (s *Last9MCPServer) resolveClientID(ctx context.Context, info ClientInfo) string {
+	if id, ok := ctx.Value(contextKeyClientID).(string); ok && id != "" {
+		return id
+	}
+	if s.serverTransport == "stdio" {
+		s.mu.RLock()
+		id := s.currentClientID
+		s.mu.RUnlock()
+		if id != "" {
+			return id
+		}
+	}
+	return s.stableClientID(info)
 }
 
 // getCurrentClientID returns the client ID from context or falls back to the

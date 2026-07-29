@@ -64,6 +64,7 @@ const (
 	opSamplingCreate     = "sampling/createMessage"
 	opCompletionComplete = "completion/complete"
 	opInitialize         = "initialize"
+	opServerDiscover     = "server/discover"
 	opPing               = "ping"
 )
 
