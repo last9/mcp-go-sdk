@@ -92,6 +92,29 @@ func (s *sessionStore) create(ctx context.Context, clientID string, info ClientI
 	)
 }
 
+// ensure creates a session when missing and refreshes last-activity otherwise.
+func (s *sessionStore) ensure(clientID string, info ClientInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[clientID]; ok {
+		sess.mu.Lock()
+		sess.info = info
+		sess.lastActivity = time.Now()
+		sess.mu.Unlock()
+		return
+	}
+	s.sessions[clientID] = &clientSession{
+		info:          info,
+		activeQueries: make(map[string]*storedQuery),
+		lastActivity:  time.Now(),
+	}
+	s.logger.Info("mcp session created",
+		"client.id", clientID,
+		"client.name", info.Name,
+		"client.version", info.Version,
+	)
+}
+
 func (s *sessionStore) getInfo(clientID string) (ClientInfo, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
