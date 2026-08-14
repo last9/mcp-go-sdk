@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,13 +14,13 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -32,15 +33,16 @@ type Last9MCPServer struct {
 	serverVersion   string
 	serverTransport string
 
-	tracer  trace.Tracer
-	logger  *slog.Logger
+	tracer   trace.Tracer
+	logger   *slog.Logger
 	sessions *sessionStore
-	inst    *instruments
-	cfg     *config
+	inst     *instruments
+	cfg      *config
 
 	// currentClientID is the last-seen client for stdio, which is single-client.
 	mu              sync.RWMutex
 	currentClientID string
+	anonymousSeq    atomic.Uint64
 
 	// Disconnect lifecycle
 	transportCtx    context.Context

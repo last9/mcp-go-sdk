@@ -43,6 +43,7 @@ func (s *Last9MCPServer) requestMiddleware(next sdkmcp.MethodHandler) sdkmcp.Met
 
 		// Attach client identity to context for downstream handlers.
 		ctx = s.attachClientContext(ctx, req)
+		defer s.removeUnattributedSession(clientInfoFromCtx(ctx, s), clientIDFromCtx(ctx))
 
 		switch method {
 		case opToolsCall:
@@ -140,6 +141,7 @@ func (s *Last9MCPServer) handleServerDiscover(ctx context.Context, next sdkmcp.M
 	info := s.clientInfoFromRequest(req)
 	clientID := s.stableClientID(info)
 	s.sessions.ensure(clientID, info)
+	defer s.removeUnattributedSession(info, clientID)
 
 	ctx = context.WithValue(ctx, contextKeyClientID, clientID)
 	ctx = context.WithValue(ctx, contextKeyClientInfo, info)
@@ -552,12 +554,25 @@ func (s *Last9MCPServer) generateClientID(info ClientInfo) string {
 }
 
 // stableClientID returns a deterministic ID for stateless per-request clients
-// that identify themselves via _meta on every call.
+// that identify themselves via _meta on every call. Anonymous requests cannot
+// be correlated safely, so each gets an isolated per-request ID instead of
+// sharing the unknown_client session bucket.
 func (s *Last9MCPServer) stableClientID(info ClientInfo) string {
 	if info.Name == "unknown_client" {
-		return "unknown_client"
+		return fmt.Sprintf("unattributed_%s_%d_%d", info.Transport, os.Getpid(), s.anonymousSeq.Add(1))
 	}
 	return fmt.Sprintf("%s_%s_%s", info.Name, info.Version, info.Transport)
+}
+
+// removeUnattributedSession bounds per-request state for anonymous stateless
+// clients. Without a stable identity their requests cannot be correlated, and
+// retaining each isolated session until the normal timeout would grow memory
+// with request volume.
+func (s *Last9MCPServer) removeUnattributedSession(info ClientInfo, clientID string) {
+	if info.Name != "unknown_client" || s.serverTransport == "stdio" || clientID == "" {
+		return
+	}
+	s.sessions.forceRemove(context.Background(), clientID)
 }
 
 // resolveClientID picks the client ID for a non-initialize request.
