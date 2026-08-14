@@ -56,9 +56,7 @@ func main() {
 
 	registerTools(mcpServer)
 
-	handler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
-		return mcpServer.Server
-	}, nil)
+	handler := mcpServer.NewStreamableHTTPHandler(nil)
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
