@@ -70,14 +70,14 @@ func NewClientWithOptions(clientName, version string, opts ...Option) (*Last9MCP
 
 	if !cfg.skipOTelInit {
 		var err error
-		tp, mp, lp, logger, err = initOpenTelemetry(ctx, clientName, version)
+		tp, mp, lp, logger, err = initOpenTelemetry(ctx, clientName, version, cfg.applyLogLevel(slog.Default()))
 		if err != nil {
 			return nil, fmt.Errorf("initializing OpenTelemetry: %w", err)
 		}
 	} else {
 		logger = slog.Default()
 	}
-	logger = withMinLevel(logger, cfg.logLevel)
+	logger = cfg.applyLogLevel(logger)
 
 	tracerProvider, meterProvider := instrumentationProviders(tp, mp)
 	tracer := tracerProvider.Tracer(clientName)

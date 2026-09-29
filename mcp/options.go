@@ -23,7 +23,7 @@ type config struct {
 	sessionTimeout time.Duration
 	queryTimeout   time.Duration
 
-	// Minimum log severity emitted to the OTel log pipeline.
+	// Minimum severity of the SDK's own log records.
 	logLevel slog.Level
 
 	// skipOTelInit prevents NewServer from calling otel.SetTracerProvider /
@@ -102,11 +102,20 @@ func WithQueryTimeout(d time.Duration) Option {
 	return func(c *config) { c.queryTimeout = d }
 }
 
-// WithLogLevel sets the minimum severity of the log records the SDK emits.
-// It applies to the OTel log pipeline and, with WithSkipProviderInit, to
-// slog.Default(). Default: slog.LevelInfo.
+// WithLogLevel sets the minimum severity of the log records the SDK emits,
+// including warnings raised while it starts up. It applies to the OTel log
+// pipeline and, with WithSkipProviderInit, to slog.Default(). It filters on
+// top of the destination handler, so it can make the SDK quieter but cannot
+// enable records that handler rejects: to see the SDK's Debug records under
+// slog.Default(), configure that handler for Debug as well.
+// Default: slog.LevelInfo.
 func WithLogLevel(level slog.Level) Option {
 	return func(c *config) { c.logLevel = level }
+}
+
+// applyLogLevel filters logger to the configured level.
+func (c *config) applyLogLevel(logger *slog.Logger) *slog.Logger {
+	return withMinLevel(logger, c.logLevel)
 }
 
 // WithDisableResources disables span and metric instrumentation for all

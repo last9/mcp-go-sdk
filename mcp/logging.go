@@ -39,7 +39,8 @@ func initLogging(ctx context.Context, res *resource.Resource) (*slog.Logger, *lo
 }
 
 // withMinLevel returns a logger that drops records below level before they
-// reach logger's handler.
+// reach logger's handler. The handler's own Enabled decision still applies,
+// so this can only make logging stricter.
 func withMinLevel(logger *slog.Logger, level slog.Level) *slog.Logger {
 	return slog.New(levelHandler{level: level, handler: logger.Handler()})
 }
