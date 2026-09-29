@@ -100,3 +100,71 @@ func TestGlobalProviders_OutliveOwnerWhileOtherInstancesRun(t *testing.T) {
 	}
 	span.End()
 }
+
+// shutdownQuietly calls f with a short deadline; the exporters point at a
+// closed port, so flush errors are expected and ignored.
+func shutdownQuietly(f func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = f(ctx)
+}
+
+func TestGlobalProviders_RepeatedOwnerShutdownKeepsThemRunning(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+
+	s, err := NewServer("test-server", "1.0.0")
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	c, err := NewClient("test-client", "1.0.0")
+	if err != nil {
+		shutdownQuietly(s.Shutdown)
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { shutdownQuietly(c.Shutdown) })
+
+	// For example a deferred Shutdown in main plus one in a signal handler.
+	shutdownQuietly(s.Shutdown)
+	shutdownQuietly(s.Shutdown)
+
+	_, span := otel.Tracer("app").Start(context.Background(), "while-client-runs")
+	if !span.IsRecording() {
+		t.Error("a second Shutdown of the owner stopped the globals while the client was still running")
+	}
+	span.End()
+}
+
+func TestGlobalProviders_RetainedOwnerReleasedWhenReplaced(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+
+	a, err := NewServer("server-a", "1.0.0")
+	if err != nil {
+		t.Fatalf("NewServer a: %v", err)
+	}
+	b, err := NewClient("client-b", "1.0.0")
+	if err != nil {
+		shutdownQuietly(a.Shutdown)
+		t.Fatalf("NewClient b: %v", err)
+	}
+	t.Cleanup(func() { shutdownQuietly(b.Shutdown) })
+
+	// a's providers are retained because they are still the globals.
+	shutdownQuietly(a.Shutdown)
+
+	// The application then installs its own globals, and a new instance
+	// starts and registers itself as the owner.
+	installTestProviders(t)
+	c, err := NewServer("server-c", "1.0.0")
+	if err != nil {
+		t.Fatalf("NewServer c: %v", err)
+	}
+	t.Cleanup(func() { shutdownQuietly(c.Shutdown) })
+
+	// Nothing uses a's providers any more, so they must have been shut down
+	// rather than leaked.
+	_, span := a.traceProvider.Tracer("check").Start(context.Background(), "leak-check")
+	if span.IsRecording() {
+		t.Error("retained providers of the stopped owner were leaked when a new owner registered")
+	}
+	span.End()
+}

@@ -39,7 +39,16 @@ var globalOwner struct {
 // the OTel global providers, unless another server or client in this process
 // registered its providers and they are still the globals. The first instance
 // to start keeps the globals until every instance has shut down.
-func registerGlobalProviders(tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider) {
+func registerGlobalProviders(ctx context.Context, tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider) {
+	// A stopped owner whose providers were kept only because they were the
+	// globals is shut down once something else has replaced them.
+	var released []interface{ Shutdown(context.Context) error }
+	defer func() {
+		for _, p := range released {
+			_ = p.Shutdown(ctx)
+		}
+	}()
+
 	globalOwner.Lock()
 	defer globalOwner.Unlock()
 
@@ -50,6 +59,9 @@ func registerGlobalProviders(tp *sdktrace.TracerProvider, mp *sdkmetric.MeterPro
 
 	if globalOwner.tp != nil && otel.GetTracerProvider() == trace.TracerProvider(globalOwner.tp) {
 		return
+	}
+	if globalOwner.ownerStopped {
+		released = append(released, globalOwner.tp, globalOwner.mp)
 	}
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
@@ -72,7 +84,9 @@ func releaseGlobalProviders(tp *sdktrace.TracerProvider) (keep bool, orphaned []
 	defer globalOwner.Unlock()
 
 	if _, ok := globalOwner.running[tp]; !ok {
-		return false, nil
+		// A repeated Shutdown of an owner whose providers are being kept for
+		// other instances must keep them too.
+		return tp != nil && tp == globalOwner.tp && globalOwner.ownerStopped, nil
 	}
 	delete(globalOwner.running, tp)
 

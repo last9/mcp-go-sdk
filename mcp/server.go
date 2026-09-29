@@ -175,7 +175,7 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktr
 		return nil, nil, nil, nil, fmt.Errorf("initializing logging: %w", err)
 	}
 
-	registerGlobalProviders(tp, mp)
+	registerGlobalProviders(ctx, tp, mp)
 	return tp, mp, lp, logger, nil
 }
 
