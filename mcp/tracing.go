@@ -7,6 +7,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -41,6 +42,11 @@ type clientSession struct {
 	activeQueries map[string]*storedQuery
 	lastActivity  time.Time
 	mu            sync.RWMutex
+
+	// activeAttrs holds the attributes this session was counted under in
+	// mcp.active.sessions, or nil if it was never counted. Keeping them lets
+	// the decrement use exactly the attribute set of the original increment.
+	activeAttrs []attribute.KeyValue
 }
 
 // sessionStore manages trace contexts and session metadata for all connected clients.
@@ -51,15 +57,21 @@ type sessionStore struct {
 	done     chan struct{}
 	cfg      *config
 	logger   *slog.Logger
+
+	// onRemove, if set, is called once for every session that leaves the
+	// store, whether through disconnect, shutdown, or the stale-session sweep.
+	// It is called without any store locks held.
+	onRemove func(ctx context.Context, sess *clientSession)
 }
 
-func newSessionStore(cfg *config, logger *slog.Logger) *sessionStore {
+func newSessionStore(cfg *config, logger *slog.Logger, onRemove func(context.Context, *clientSession)) *sessionStore {
 	s := &sessionStore{
 		sessions: make(map[string]*clientSession),
 		cleanup:  time.NewTicker(5 * time.Minute),
 		done:     make(chan struct{}),
 		cfg:      cfg,
 		logger:   logger,
+		onRemove: onRemove,
 	}
 	go s.runCleanup()
 	return s
@@ -77,13 +89,17 @@ func (s *sessionStore) runCleanup() {
 	}
 }
 
-func (s *sessionStore) create(ctx context.Context, clientID string, info ClientInfo) {
+// create registers a new session. activeAttrs, when given, are the attributes
+// the caller used to count this session in mcp.active.sessions; they are
+// handed back through onRemove when the session is removed.
+func (s *sessionStore) create(ctx context.Context, clientID string, info ClientInfo, activeAttrs ...attribute.KeyValue) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[clientID] = &clientSession{
 		info:          info,
 		activeQueries: make(map[string]*storedQuery),
 		lastActivity:  time.Now(),
+		activeAttrs:   activeAttrs,
 	}
 	s.logger.InfoContext(ctx, "mcp session created",
 		"client.id", clientID,
@@ -213,15 +229,29 @@ func (s *sessionStore) allClientIDs() []string {
 }
 
 // forceRemove immediately removes a client session and all its queries.
-func (s *sessionStore) forceRemove(ctx context.Context, clientID string) {
+// It reports whether a session was removed.
+func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sess, ok := s.sessions[clientID]; ok {
+	sess, ok := s.sessions[clientID]
+	if ok {
 		sess.mu.Lock()
 		sess.activeQueries = make(map[string]*storedQuery)
 		sess.mu.Unlock()
 		delete(s.sessions, clientID)
-		s.logger.InfoContext(ctx, "mcp session removed", "client.id", clientID)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+	s.logger.InfoContext(ctx, "mcp session removed", "client.id", clientID)
+	s.notifyRemoved(ctx, sess)
+	return true
+}
+
+func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
+	if s.onRemove != nil {
+		s.onRemove(ctx, sess)
 	}
 }
 
@@ -263,11 +293,16 @@ func (s *sessionStore) cleanupStale(ctx context.Context) {
 		if stale {
 			s.mu.Lock()
 			// Re-check that this is still the same session pointer before deleting.
-			if s.sessions[clientID] == sess {
+			removed := s.sessions[clientID] == sess
+			if removed {
 				delete(s.sessions, clientID)
-				s.logger.DebugContext(ctx, "mcp stale session removed", "client.id", clientID)
 			}
 			s.mu.Unlock()
+
+			if removed {
+				s.logger.DebugContext(ctx, "mcp stale session removed", "client.id", clientID)
+				s.notifyRemoved(ctx, sess)
+			}
 		}
 	}
 }

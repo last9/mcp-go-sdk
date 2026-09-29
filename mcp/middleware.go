@@ -120,11 +120,21 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	)
 	defer span.End()
 
-	s.sessions.create(ctx, clientID, info)
-	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(
+	activeAttrs := []attribute.KeyValue{
 		keyMCPServerTransport.String(s.serverTransport),
 		keyMCPClientName.String(info.Name),
-	))
+	}
+	s.sessions.create(ctx, clientID, info, activeAttrs...)
+	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(activeAttrs...))
+
+	// Release the session when its connection closes. This is the only
+	// disconnect signal for Streamable HTTP, where Serve is never called.
+	if ss, ok := req.GetSession().(*sdkmcp.ServerSession); ok && ss != nil {
+		go func() {
+			_ = ss.Wait()
+			s.handleClientDisconnect(clientID)
+		}()
+	}
 
 	s.logger.InfoContext(ctx, "mcp client connected",
 		"client.id", clientID,
