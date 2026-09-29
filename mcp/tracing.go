@@ -63,6 +63,10 @@ type sessionStore struct {
 	// store, whether through disconnect, shutdown, or the stale-session sweep.
 	// It is called without any store locks held.
 	onRemove func(ctx context.Context, sess *clientSession)
+
+	// removals counts sessions that have left the map but whose onRemove
+	// callback has not finished yet.
+	removals sync.WaitGroup
 }
 
 func newSessionStore(cfg *config, logger *slog.Logger, onRemove func(context.Context, *clientSession)) *sessionStore {
@@ -247,6 +251,7 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 		sess.activeQueries = make(map[string]*storedQuery)
 		sess.mu.Unlock()
 		delete(s.sessions, clientID)
+		s.removals.Add(1)
 	}
 	s.mu.Unlock()
 
@@ -258,10 +263,19 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 	return true
 }
 
+// notifyRemoved runs the onRemove callback for a session that has left the
+// map. The caller must have registered it in removals while holding s.mu.
 func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
+	defer s.removals.Done()
 	if s.onRemove != nil {
 		s.onRemove(ctx, sess)
 	}
+}
+
+// waitForRemovals blocks until every session already taken out of the store
+// has finished its onRemove callback.
+func (s *sessionStore) waitForRemovals() {
+	s.removals.Wait()
 }
 
 func (s *sessionStore) cleanupStale(ctx context.Context) {
@@ -305,6 +319,7 @@ func (s *sessionStore) cleanupStale(ctx context.Context) {
 			removed := s.sessions[clientID] == sess
 			if removed {
 				delete(s.sessions, clientID)
+				s.removals.Add(1)
 			}
 			s.mu.Unlock()
 

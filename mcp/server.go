@@ -259,6 +259,9 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 		s.closed = true
 		s.handleServerShutdown()
 		s.lifecycleMu.Unlock()
+		// A disconnect or expiry that raced with the sweep may still be
+		// recording its decrement; let it finish before flushing.
+		s.sessions.waitForRemovals()
 	}
 
 	s.mu.Lock()
