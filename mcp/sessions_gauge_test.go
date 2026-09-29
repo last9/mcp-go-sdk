@@ -172,3 +172,28 @@ func TestActiveSessions_DecrementsWhenIdleSessionExpires(t *testing.T) {
 
 	waitForActiveSessions(t, reader, 0)
 }
+
+// With Streamable HTTP, Serve is never called, so Shutdown is the last chance
+// to release sessions before the final metric flush.
+func TestActiveSessions_ReleasedByShutdownWhileStreamableClientConnected(t *testing.T) {
+	s, reader := gaugeInfra(t)
+	ctx := context.Background()
+
+	srv := httptest.NewServer(s.NewStreamableHTTPHandler(nil))
+	defer srv.Close()
+
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "cursor", Version: "1.0"}, nil)
+	cs, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: srv.URL}, nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cs.Close()
+	waitForActiveSessions(t, reader, 1)
+
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := activeSessions(t, reader); got != 0 {
+		t.Errorf("mcp.active.sessions after Shutdown = %d, want 0", got)
+	}
+}
