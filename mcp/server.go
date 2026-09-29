@@ -79,14 +79,14 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 
 	if !cfg.skipOTelInit {
 		var err error
-		tp, mp, lp, logger, err = initOpenTelemetry(ctx, serverName, version)
+		tp, mp, lp, logger, err = initOpenTelemetry(ctx, serverName, version, cfg.applyLogLevel(slog.Default()))
 		if err != nil {
 			return nil, fmt.Errorf("initializing OpenTelemetry: %w", err)
 		}
 	} else {
 		logger = slog.Default()
 	}
-	logger = withMinLevel(logger, cfg.logLevel)
+	logger = cfg.applyLogLevel(logger)
 
 	tracerProvider, meterProvider := instrumentationProviders(tp, mp)
 	tracer := tracerProvider.Tracer(serverName)
@@ -125,8 +125,9 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 // pipeline. Once every pipeline has been created the trace and metric providers
 // are registered as the OTel globals (see registerGlobalProviders). If any step
 // fails, whatever was already created is shut down and the globals are left
-// untouched.
-func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, *sdklog.LoggerProvider, *slog.Logger, error) {
+// untouched. setupLogger receives any warnings raised along the way, before
+// the bridged logger exists.
+func initOpenTelemetry(ctx context.Context, serviceName, version string, setupLogger *slog.Logger) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, *sdklog.LoggerProvider, *slog.Logger, error) {
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(), // honour OTEL_RESOURCE_ATTRIBUTES
 		resource.WithProcess(),
@@ -141,7 +142,7 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktr
 	if err != nil {
 		// resource.New returns a partial resource on non-fatal errors; treat
 		// warnings as non-fatal so the server still starts.
-		slog.Warn("mcp resource creation had warnings", "err", err)
+		setupLogger.Warn("mcp resource creation had warnings", "err", err)
 		if res == nil {
 			return nil, nil, nil, nil, fmt.Errorf("creating resource: %w", err)
 		}
