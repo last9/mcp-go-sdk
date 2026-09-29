@@ -268,8 +268,9 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 
 // classifyToolResult decides whether a tools/call succeeded. A call fails if
 // it returned an error (a system error) or a CallToolResult with IsError set
-// (a user error, meaning the tool ran and reported a failure). errMsg is the
-// error text, or the first text content of an IsError result.
+// (a user error, meaning the tool ran and reported a failure, whatever content
+// it returned). errMsg is the error text, or the first text block of an
+// IsError result, or empty if it has none.
 func classifyToolResult(result sdkmcp.Result, err error) (success bool, errType, errMsg string) {
 	if err != nil {
 		return false, errTypeSystem, err.Error()
@@ -278,13 +279,12 @@ func classifyToolResult(result sdkmcp.Result, err error) (success bool, errType,
 	if !ok || cr == nil || !cr.IsError {
 		return true, "", ""
 	}
-	errType = errTypeSystem
-	if len(cr.Content) > 0 {
-		if txt, ok := cr.Content[0].(*sdkmcp.TextContent); ok {
-			errType, errMsg = errTypeUser, txt.Text
+	for _, c := range cr.Content {
+		if txt, ok := c.(*sdkmcp.TextContent); ok {
+			return false, errTypeUser, txt.Text
 		}
 	}
-	return false, errType, errMsg
+	return false, errTypeUser, ""
 }
 
 // handleResourcesRead instruments a resources/read operation.
