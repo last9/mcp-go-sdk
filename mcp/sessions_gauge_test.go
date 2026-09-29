@@ -241,3 +241,53 @@ func TestActiveSessions_ConcurrentInitializeAndShutdownEndAtZero(t *testing.T) {
 		}
 	}
 }
+
+// A removal that has already taken a session out of the store, but not yet
+// recorded the decrement, must finish before Shutdown flushes metrics.
+func TestActiveSessions_ShutdownWaitsForInFlightRemovals(t *testing.T) {
+	s, reader := gaugeInfra(t)
+	s.setTransport("stdio")
+
+	req := &sdkmcp.InitializeRequest{Params: &sdkmcp.InitializeParams{
+		ClientInfo: &sdkmcp.Implementation{Name: "cursor", Version: "1.0"},
+	}}
+	if _, err := s.handleInitialize(context.Background(), noop, req); err != nil {
+		t.Fatalf("handleInitialize: %v", err)
+	}
+	ids := s.sessions.allClientIDs()
+	if len(ids) != 1 {
+		t.Fatalf("expected one session, got %v", ids)
+	}
+
+	// Hold the removal between leaving the store and recording the decrement,
+	// the window a disconnect watcher can be preempted in.
+	removed := make(chan struct{})
+	release := make(chan struct{})
+	onRemove := s.sessions.onRemove
+	s.sessions.onRemove = func(ctx context.Context, sess *clientSession) {
+		close(removed)
+		<-release
+		onRemove(ctx, sess)
+	}
+	go s.handleClientDisconnect(ids[0])
+	<-removed
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		_ = s.Shutdown(context.Background())
+	}()
+
+	select {
+	case <-shutdownDone:
+		close(release)
+		t.Fatal("Shutdown returned while a session removal was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-shutdownDone
+
+	if got := activeSessions(t, reader); got != 0 {
+		t.Errorf("mcp.active.sessions = %d after Shutdown, want 0", got)
+	}
+}
