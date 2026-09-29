@@ -66,7 +66,10 @@ func WithDisablePromptCapture() Option {
 	return func(c *config) { c.capturePromptArgs = false }
 }
 
-// WithDisableSamplingCapture disables recording sampling message content in spans.
+// WithDisableSamplingCapture stops recording the requested model on
+// sampling/createMessage spans. By default the first named model preference
+// hint is recorded as mcp.sampling.model and gen_ai.request.model. Message
+// content is never recorded, with or without this option.
 func WithDisableSamplingCapture() Option {
 	return func(c *config) { c.captureSamplingArgs = false }
 }
