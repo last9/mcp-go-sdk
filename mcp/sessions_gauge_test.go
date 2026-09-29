@@ -197,3 +197,47 @@ func TestActiveSessions_ReleasedByShutdownWhileStreamableClientConnected(t *test
 		t.Errorf("mcp.active.sessions after Shutdown = %d, want 0", got)
 	}
 }
+
+// HTTP handlers keep running after Shutdown starts, so an initialize that
+// arrives during or after the sweep must not leave a session counted.
+func TestActiveSessions_InitializeAfterShutdownIsNotCounted(t *testing.T) {
+	s, reader := gaugeInfra(t)
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	req := &sdkmcp.InitializeRequest{Params: &sdkmcp.InitializeParams{
+		ClientInfo: &sdkmcp.Implementation{Name: "cursor", Version: "1.0"},
+	}}
+	if _, err := s.handleInitialize(context.Background(), noop, req); err != nil {
+		t.Fatalf("handleInitialize: %v", err)
+	}
+
+	if got := activeSessions(t, reader); got != 0 {
+		t.Errorf("mcp.active.sessions = %d after an initialize that arrived post-shutdown, want 0", got)
+	}
+	if ids := s.sessions.allClientIDs(); len(ids) != 0 {
+		t.Errorf("session stored after shutdown: %v", ids)
+	}
+}
+
+func TestActiveSessions_ConcurrentInitializeAndShutdownEndAtZero(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		s, reader := gaugeInfra(t)
+		req := &sdkmcp.InitializeRequest{Params: &sdkmcp.InitializeParams{
+			ClientInfo: &sdkmcp.Implementation{Name: "cursor", Version: "1.0"},
+		}}
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = s.handleInitialize(context.Background(), noop, req)
+		}()
+		_ = s.Shutdown(context.Background())
+		<-done
+
+		if got := activeSessions(t, reader); got != 0 {
+			t.Fatalf("iteration %d: mcp.active.sessions = %d after initialize raced Shutdown, want 0", i, got)
+		}
+	}
+}
