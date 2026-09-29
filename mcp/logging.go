@@ -38,3 +38,32 @@ func initLogging(ctx context.Context, res *resource.Resource) (*slog.Logger, *lo
 	logger := slog.New(handler)
 	return logger, provider, nil
 }
+
+// withMinLevel returns a logger that drops records below level before they
+// reach logger's handler.
+func withMinLevel(logger *slog.Logger, level slog.Level) *slog.Logger {
+	return slog.New(levelHandler{level: level, handler: logger.Handler()})
+}
+
+// levelHandler is a slog.Handler that enforces a minimum level on top of the
+// handler it wraps.
+type levelHandler struct {
+	level   slog.Level
+	handler slog.Handler
+}
+
+func (h levelHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level && h.handler.Enabled(ctx, level)
+}
+
+func (h levelHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.handler.Handle(ctx, r)
+}
+
+func (h levelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return levelHandler{level: h.level, handler: h.handler.WithAttrs(attrs)}
+}
+
+func (h levelHandler) WithGroup(name string) slog.Handler {
+	return levelHandler{level: h.level, handler: h.handler.WithGroup(name)}
+}

@@ -83,8 +83,9 @@ func WithQueryTimeout(d time.Duration) Option {
 	return func(c *config) { c.queryTimeout = d }
 }
 
-// WithLogLevel sets the minimum severity for log records exported to the OTel
-// log pipeline. Default: slog.LevelInfo.
+// WithLogLevel sets the minimum severity of the log records the SDK emits.
+// It applies to the OTel log pipeline and, with WithSkipProviderInit, to
+// slog.Default(). Default: slog.LevelInfo.
 func WithLogLevel(level slog.Level) Option {
 	return func(c *config) { c.logLevel = level }
 }
