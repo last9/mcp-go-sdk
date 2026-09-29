@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -288,5 +289,39 @@ func TestSessionStore_LatestQuery_ConcurrentSafe(t *testing.T) {
 			s.latestQuery("c1")
 		}()
 	}
+	wg.Wait()
+}
+
+// Stateless requests keep creating and removing sessions while Shutdown
+// waits for in-flight removals, so a removal must be able to start while
+// another goroutine is waiting on earlier ones.
+func TestSessionStore_RemovalsWhileWaitingForRemovals(t *testing.T) {
+	s := newTestStore(t)
+	s.onRemove = func(context.Context, *clientSession) { time.Sleep(time.Microsecond) }
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				id := fmt.Sprintf("w%d-c%d", w, i)
+				s.create(context.Background(), id, ClientInfo{Name: "anon"})
+				s.forceRemove(context.Background(), id)
+			}
+		}(w)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.waitForRemovals()
+	}
+	close(stop)
 	wg.Wait()
 }
