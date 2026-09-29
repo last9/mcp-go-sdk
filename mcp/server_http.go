@@ -11,7 +11,7 @@ import (
 // embedded Server directly so spans, metrics, logs, and client IDs carry the
 // correct streamable transport attribution.
 func (s *Last9MCPServer) NewStreamableHTTPHandler(opts *sdkmcp.StreamableHTTPOptions) http.Handler {
-	s.serverTransport = "streamable"
+	s.setTransport("streamable")
 	return sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server {
 		return s.Server
 	}, opts)

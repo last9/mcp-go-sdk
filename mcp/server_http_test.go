@@ -24,8 +24,8 @@ func TestNewStreamableHTTPHandlerSetsTransport(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("tools/list: got HTTP %d, want 200; body: %s", recorder.Code, recorder.Body.String())
 	}
-	if s.serverTransport != "streamable" {
-		t.Fatalf("server transport: got %q, want streamable", s.serverTransport)
+	if s.transport() != "streamable" {
+		t.Fatalf("server transport: got %q, want streamable", s.transport())
 	}
 
 	for _, span := range exp.GetSpans() {
