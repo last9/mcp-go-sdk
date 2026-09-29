@@ -9,7 +9,6 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -80,8 +79,9 @@ func NewClientWithOptions(clientName, version string, opts ...Option) (*Last9MCP
 	}
 	logger = withMinLevel(logger, cfg.logLevel)
 
-	tracer := otel.Tracer(clientName)
-	inst, err := initInstruments(otel.Meter(clientName))
+	tracerProvider, meterProvider := instrumentationProviders(tp, mp)
+	tracer := tracerProvider.Tracer(clientName)
+	inst, err := initInstruments(meterProvider.Meter(clientName))
 	if err != nil {
 		return nil, fmt.Errorf("initializing metric instruments: %w", err)
 	}
@@ -150,6 +150,8 @@ func (c *Last9MCPClient) Connect(ctx context.Context, transport sdkmcp.Transport
 // Shutdown flushes and closes all three OTel pipelines (traces, metrics, logs).
 func (c *Last9MCPClient) Shutdown(ctx context.Context) error {
 	c.logger.InfoContext(ctx, "mcp client shutting down")
+
+	releaseGlobalProviders(c.traceProvider)
 
 	var errs []error
 	if c.traceProvider != nil {

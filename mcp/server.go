@@ -10,10 +10,8 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -90,8 +88,9 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 	}
 	logger = withMinLevel(logger, cfg.logLevel)
 
-	tracer := otel.Tracer(serverName)
-	inst, err := initInstruments(otel.Meter(serverName))
+	tracerProvider, meterProvider := instrumentationProviders(tp, mp)
+	tracer := tracerProvider.Tracer(serverName)
+	inst, err := initInstruments(meterProvider.Meter(serverName))
 	if err != nil {
 		return nil, fmt.Errorf("initializing metric instruments: %w", err)
 	}
@@ -123,9 +122,10 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 
 // initOpenTelemetry builds the trace, metric, and log pipelines and returns
 // their providers for later shutdown, plus a logger bridged into the log
-// pipeline. The trace and metric providers are registered as the OTel globals
-// only once every pipeline has been created. If any step fails, whatever was
-// already created is shut down and the globals are left untouched.
+// pipeline. Once every pipeline has been created the trace and metric providers
+// are registered as the OTel globals (see registerGlobalProviders). If any step
+// fails, whatever was already created is shut down and the globals are left
+// untouched.
 func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, *sdklog.LoggerProvider, *slog.Logger, error) {
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(), // honour OTEL_RESOURCE_ATTRIBUTES
@@ -176,13 +176,7 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktr
 		return nil, nil, nil, nil, fmt.Errorf("initializing logging: %w", err)
 	}
 
-	otel.SetTracerProvider(tp)
-	otel.SetMeterProvider(mp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
-
+	registerGlobalProviders(tp, mp)
 	return tp, mp, lp, logger, nil
 }
 
@@ -259,6 +253,8 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 
 	// Collect all provider errors so a trace flush failure does not prevent
 	// metric and log pipelines from flushing (M3).
+	releaseGlobalProviders(s.traceProvider)
+
 	var errs []error
 	if s.traceProvider != nil {
 		if err := s.traceProvider.Shutdown(ctx); err != nil {
