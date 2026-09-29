@@ -238,28 +238,15 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	s.inst.toolDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
 	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
-	success := err == nil
-	if cr, ok := result.(*sdkmcp.CallToolResult); ok && cr != nil {
-		success = success && !cr.IsError
-	}
-
-	if success {
+	if success, errType, errMsg := classifyToolResult(result, err); success {
 		span.SetStatus(codes.Ok, "")
 		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
 		span.AddEvent("result.received", trace.WithAttributes(
 			keyMCPOperationStatus.String(statusSuccess),
 		))
 	} else {
-		errType := errTypeSystem
-		errMsg := ""
 		if err != nil {
-			errMsg = err.Error()
 			span.RecordError(err)
-		} else if cr, ok := result.(*sdkmcp.CallToolResult); ok && cr != nil && len(cr.Content) > 0 {
-			if txt, ok := cr.Content[0].(*sdkmcp.TextContent); ok {
-				errMsg = txt.Text
-				errType = errTypeUser
-			}
 		}
 		span.SetStatus(codes.Error, errMsg)
 		span.SetAttributes(
@@ -277,6 +264,27 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	}
 
 	return result, err
+}
+
+// classifyToolResult decides whether a tools/call succeeded. A call fails if
+// it returned an error (a system error) or a CallToolResult with IsError set
+// (a user error, meaning the tool ran and reported a failure). errMsg is the
+// error text, or the first text content of an IsError result.
+func classifyToolResult(result sdkmcp.Result, err error) (success bool, errType, errMsg string) {
+	if err != nil {
+		return false, errTypeSystem, err.Error()
+	}
+	cr, ok := result.(*sdkmcp.CallToolResult)
+	if !ok || cr == nil || !cr.IsError {
+		return true, "", ""
+	}
+	errType = errTypeSystem
+	if len(cr.Content) > 0 {
+		if txt, ok := cr.Content[0].(*sdkmcp.TextContent); ok {
+			errType, errMsg = errTypeUser, txt.Text
+		}
+	}
+	return false, errType, errMsg
 }
 
 // handleResourcesRead instruments a resources/read operation.
