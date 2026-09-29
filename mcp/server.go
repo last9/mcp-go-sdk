@@ -48,9 +48,6 @@ type Last9MCPServer struct {
 	currentClientID string
 	anonymousSeq    atomic.Uint64
 
-	// Disconnect lifecycle
-	disconnectChan chan string
-
 	// shutdownCtx is cancelled by Shutdown. Serve watches it, so Shutdown stops
 	// Serve whether it is called before, during, or after Serve starts.
 	shutdownCtx    context.Context
@@ -113,16 +110,15 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 		serverVersion:  version,
 		tracer:         tracer,
 		logger:         logger,
-		sessions:       newSessionStore(cfg, logger),
 		inst:           inst,
 		cfg:            cfg,
-		disconnectChan: make(chan string, 10),
 		traceProvider:  tp,
 		metricProvider: mp,
 		logProvider:    lp,
 	}
 
 	s.shutdownCtx, s.shutdownCancel = context.WithCancel(context.Background())
+	s.sessions = newSessionStore(cfg, logger, s.sessionRemoved)
 	s.Server.AddReceivingMiddleware(s.requestMiddleware)
 
 	logger.InfoContext(ctx, "mcp server initialised",
@@ -195,37 +191,24 @@ func (s *Last9MCPServer) Serve(ctx context.Context, transport sdkmcp.Transport) 
 
 	s.setTransport(mapServerTransport(transport))
 
-	go s.monitorDisconnects(ctx)
-
 	s.logger.InfoContext(ctx, "mcp server starting",
 		"transport", s.transport(),
 	)
 
-	if err := s.Server.Run(ctx, transport); err != nil {
+	// Whether Run fails or the client simply goes away, every session it
+	// served is over, so release them all.
+	err := s.Server.Run(ctx, transport)
+	if err != nil {
 		s.logger.ErrorContext(ctx, "mcp server error", "err", err)
-		s.handleServerShutdown()
-		return err
 	}
-	return nil
+	s.handleServerShutdown()
+	return err
 }
 
-func (s *Last9MCPServer) monitorDisconnects(ctx context.Context) {
-	for {
-		select {
-		case clientID := <-s.disconnectChan:
-			s.handleClientDisconnect(clientID)
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
+// handleClientDisconnect removes a client's session. It is idempotent, so it
+// is safe for the session watcher, Serve, and Shutdown to all call it.
 func (s *Last9MCPServer) handleClientDisconnect(clientID string) {
-	// Retrieve client info before forceRemove so we can match the attribute set
-	// used on the increment in handleInitialize (M2: gauge would otherwise drift).
 	info, _ := s.sessions.getInfo(clientID)
-
-	s.sessions.endQuery(clientID)
 
 	s.mu.Lock()
 	if s.currentClientID == clientID {
@@ -233,21 +216,23 @@ func (s *Last9MCPServer) handleClientDisconnect(clientID string) {
 	}
 	s.mu.Unlock()
 
-	s.sessions.forceRemove(context.Background(), clientID)
+	if s.sessions.forceRemove(context.Background(), clientID) {
+		s.logger.InfoContext(context.Background(), "mcp client disconnected", "client.id", clientID, "client.name", info.Name)
+	}
+}
 
-	// Use context.Background() — the Serve context may already be cancelled at this
-	// point, and a cancelled context silently discards OTel writes.
-	s.inst.activeSessions.Add(context.Background(), -1, metric.WithAttributes(
-		keyMCPServerTransport.String(s.transport()),
-		keyMCPClientName.String(info.Name),
-	))
-	s.logger.InfoContext(context.Background(), "mcp client disconnected", "client.id", clientID, "client.name", info.Name)
+// sessionRemoved is the session store's removal hook. It decrements
+// mcp.active.sessions for sessions that were counted when they initialized.
+func (s *Last9MCPServer) sessionRemoved(ctx context.Context, sess *clientSession) {
+	if len(sess.activeAttrs) == 0 {
+		return
+	}
+	// The caller's context may already be cancelled (for example during
+	// shutdown), and the metrics SDK drops writes made with a cancelled context.
+	s.inst.activeSessions.Add(context.WithoutCancel(ctx), -1, metric.WithAttributes(sess.activeAttrs...))
 }
 
 func (s *Last9MCPServer) handleServerShutdown() {
-	// Call handleClientDisconnect directly rather than sending through the
-	// buffered channel, which can silently drop events when there are more
-	// clients than the channel capacity (H3).
 	for _, id := range s.sessions.allClientIDs() {
 		s.handleClientDisconnect(id)
 	}

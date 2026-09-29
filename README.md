@@ -98,7 +98,7 @@ We track the query across calls. All tools invoked during the same LLM turn shar
 | `mcp.sampling.creates.total` | Counter | Sampling calls |
 | `mcp.sampling.create.duration.seconds` | Histogram | Sampling latency |
 | `mcp.server.request.duration.seconds` | Histogram | All operations |
-| `mcp.active.sessions` | Gauge | Connected clients right now |
+| `mcp.active.sessions` | Gauge | Clients connected through the `initialize` handshake right now. Drops when the client disconnects, the idle session expires, or the server shuts down. |
 
 Flushed every 10 seconds. Histogram buckets are set to sensible defaults for LLM workloads — not the generic OTel defaults that make P99 charts useless.
 
