@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
 )
@@ -18,7 +17,7 @@ import (
 // or logger.ErrorContext(ctx, ...) will extract the active span from ctx and
 // inject trace_id, span_id, and trace_flags into the emitted log record.
 func initLogging(ctx context.Context, res *resource.Resource) (*slog.Logger, *log.LoggerProvider, error) {
-	exp, err := otlploghttp.New(ctx)
+	exp, err := newLogExporter(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating log exporter: %w", err)
 	}

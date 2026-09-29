@@ -12,8 +12,6 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -146,7 +144,7 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*resou
 		}
 	}
 
-	traceExp, err := otlptracehttp.New(ctx)
+	traceExp, err := newTraceExporter(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("creating trace exporter: %w", err)
 	}
@@ -161,7 +159,7 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*resou
 		propagation.Baggage{},
 	))
 
-	metricExp, err := otlpmetrichttp.New(ctx)
+	metricExp, err := newMetricExporter(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("creating metric exporter: %w", err)
 	}
