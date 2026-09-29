@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -70,14 +69,14 @@ func NewClientWithOptions(clientName, version string, opts ...Option) (*Last9MCP
 
 	if !cfg.skipOTelInit {
 		var err error
-		tp, mp, lp, logger, err = initOpenTelemetry(ctx, clientName, version)
+		tp, mp, lp, logger, err = initOpenTelemetry(ctx, clientName, version, cfg.applyLogLevel(slog.Default()))
 		if err != nil {
 			return nil, fmt.Errorf("initializing OpenTelemetry: %w", err)
 		}
 	} else {
 		logger = slog.Default()
 	}
-	logger = withMinLevel(logger, cfg.logLevel)
+	logger = cfg.applyLogLevel(logger)
 
 	tracerProvider, meterProvider := instrumentationProviders(tp, mp)
 	tracer := tracerProvider.Tracer(clientName)
@@ -151,25 +150,7 @@ func (c *Last9MCPClient) Connect(ctx context.Context, transport sdkmcp.Transport
 func (c *Last9MCPClient) Shutdown(ctx context.Context) error {
 	c.logger.InfoContext(ctx, "mcp client shutting down")
 
-	releaseGlobalProviders(c.traceProvider)
-
-	var errs []error
-	if c.traceProvider != nil {
-		if err := c.traceProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("trace provider: %w", err))
-		}
-	}
-	if c.metricProvider != nil {
-		if err := c.metricProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("metric provider: %w", err))
-		}
-	}
-	if c.logProvider != nil {
-		if err := c.logProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("log provider: %w", err))
-		}
-	}
-	return errors.Join(errs...)
+	return shutdownProviders(ctx, c.traceProvider, c.metricProvider, c.logProvider)
 }
 
 // clientMiddleware is the sending middleware registered on the underlying

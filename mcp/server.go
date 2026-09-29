@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -84,14 +83,14 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 
 	if !cfg.skipOTelInit {
 		var err error
-		tp, mp, lp, logger, err = initOpenTelemetry(ctx, serverName, version)
+		tp, mp, lp, logger, err = initOpenTelemetry(ctx, serverName, version, cfg.applyLogLevel(slog.Default()))
 		if err != nil {
 			return nil, fmt.Errorf("initializing OpenTelemetry: %w", err)
 		}
 	} else {
 		logger = slog.Default()
 	}
-	logger = withMinLevel(logger, cfg.logLevel)
+	logger = cfg.applyLogLevel(logger)
 
 	tracerProvider, meterProvider := instrumentationProviders(tp, mp)
 	tracer := tracerProvider.Tracer(serverName)
@@ -130,8 +129,9 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 // pipeline. Once every pipeline has been created the trace and metric providers
 // are registered as the OTel globals (see registerGlobalProviders). If any step
 // fails, whatever was already created is shut down and the globals are left
-// untouched.
-func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, *sdklog.LoggerProvider, *slog.Logger, error) {
+// untouched. setupLogger receives any warnings raised along the way, before
+// the bridged logger exists.
+func initOpenTelemetry(ctx context.Context, serviceName, version string, setupLogger *slog.Logger) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, *sdklog.LoggerProvider, *slog.Logger, error) {
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(), // honour OTEL_RESOURCE_ATTRIBUTES
 		resource.WithProcess(),
@@ -146,7 +146,7 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktr
 	if err != nil {
 		// resource.New returns a partial resource on non-fatal errors; treat
 		// warnings as non-fatal so the server still starts.
-		slog.Warn("mcp resource creation had warnings", "err", err)
+		setupLogger.Warn("mcp resource creation had warnings", "err", err)
 		if res == nil {
 			return nil, nil, nil, nil, fmt.Errorf("creating resource: %w", err)
 		}
@@ -181,7 +181,7 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktr
 		return nil, nil, nil, nil, fmt.Errorf("initializing logging: %w", err)
 	}
 
-	registerGlobalProviders(tp, mp)
+	registerGlobalProviders(ctx, tp, mp)
 	return tp, mp, lp, logger, nil
 }
 
@@ -268,28 +268,8 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 	s.currentClientID = ""
 	s.mu.Unlock()
 
-	// Collect all provider errors so a trace flush failure does not prevent
-	// metric and log pipelines from flushing (M3).
-	releaseGlobalProviders(s.traceProvider)
-
-	var errs []error
-	if s.traceProvider != nil {
-		if err := s.traceProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("trace provider: %w", err))
-		}
-	}
-	if s.metricProvider != nil {
-		if err := s.metricProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("metric provider: %w", err))
-		}
-	}
-	if s.logProvider != nil {
-		if err := s.logProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("log provider: %w", err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	if err := shutdownProviders(ctx, s.traceProvider, s.metricProvider, s.logProvider); err != nil {
+		return err
 	}
 
 	s.logger.InfoContext(ctx, "mcp server shutdown complete")

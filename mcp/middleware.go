@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -595,8 +597,14 @@ func sessionID(req sdkmcp.Request) string {
 // sessionClientID returns the client ID for a client on MCP session sid.
 // Initialize and every later request on that session resolve to the same ID,
 // so clients that share a name and version stay distinct.
+//
+// The session ID itself is never used verbatim: clients present it on every
+// request, so exporting it would let anyone with access to traces or logs
+// send requests on the session. A truncated SHA-256 digest keeps the ID
+// stable and unique per session without revealing the token.
 func sessionClientID(info ClientInfo, sid string) string {
-	return fmt.Sprintf("%s_%s_%s", info.Name, info.Transport, sid)
+	sum := sha256.Sum256([]byte(sid))
+	return fmt.Sprintf("%s_%s_%s", info.Name, info.Transport, hex.EncodeToString(sum[:8]))
 }
 
 // stableClientID returns a deterministic ID for stateless per-request clients
