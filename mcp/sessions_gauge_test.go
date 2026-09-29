@@ -151,7 +151,6 @@ func TestActiveSessions_DecrementsWhenStreamableClientDisconnects(t *testing.T) 
 
 func TestActiveSessions_DecrementsWhenIdleSessionExpires(t *testing.T) {
 	s, reader := gaugeInfra(t)
-	s.serverTransport = "stdio"
 
 	req := &sdkmcp.InitializeRequest{Params: &sdkmcp.InitializeParams{
 		ClientInfo: &sdkmcp.Implementation{Name: "cursor", Version: "1.0"},
