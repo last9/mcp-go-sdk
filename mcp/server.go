@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -251,28 +250,8 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 	s.currentClientID = ""
 	s.mu.Unlock()
 
-	// Collect all provider errors so a trace flush failure does not prevent
-	// metric and log pipelines from flushing (M3).
-	releaseGlobalProviders(s.traceProvider)
-
-	var errs []error
-	if s.traceProvider != nil {
-		if err := s.traceProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("trace provider: %w", err))
-		}
-	}
-	if s.metricProvider != nil {
-		if err := s.metricProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("metric provider: %w", err))
-		}
-	}
-	if s.logProvider != nil {
-		if err := s.logProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("log provider: %w", err))
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	if err := shutdownProviders(ctx, s.traceProvider, s.metricProvider, s.logProvider); err != nil {
+		return err
 	}
 
 	s.logger.InfoContext(ctx, "mcp server shutdown complete")

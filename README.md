@@ -157,7 +157,7 @@ server, err := mcp.NewServerWithOptions("my-server", "1.0.0",
 
 `WithSkipProviderInit` deserves a call-out. If your application already calls `otel.SetTracerProvider`, use this option. Without it we register our own global providers and you end up with two pipelines fighting each other. With it, we pick up yours and everything goes through one place.
 
-If one process creates more than one server or client without this option, the first to start registers the global providers and keeps them until it shuts down. The others still export their own spans, metrics and logs through their own providers; they just don't replace the globals.
+If one process creates more than one server or client without this option, the first to start registers the global providers. The others still export their own spans, metrics and logs through their own providers; they just don't replace the globals. If the first one shuts down while others are still running, its providers are flushed but kept alive, so anything using the globals keeps exporting, and they are shut down when the last instance stops.
 
 ## Outbound HTTP
 

@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -151,25 +150,7 @@ func (c *Last9MCPClient) Connect(ctx context.Context, transport sdkmcp.Transport
 func (c *Last9MCPClient) Shutdown(ctx context.Context) error {
 	c.logger.InfoContext(ctx, "mcp client shutting down")
 
-	releaseGlobalProviders(c.traceProvider)
-
-	var errs []error
-	if c.traceProvider != nil {
-		if err := c.traceProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("trace provider: %w", err))
-		}
-	}
-	if c.metricProvider != nil {
-		if err := c.metricProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("metric provider: %w", err))
-		}
-	}
-	if c.logProvider != nil {
-		if err := c.logProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("log provider: %w", err))
-		}
-	}
-	return errors.Join(errs...)
+	return shutdownProviders(ctx, c.traceProvider, c.metricProvider, c.logProvider)
 }
 
 // clientMiddleware is the sending middleware registered on the underlying
