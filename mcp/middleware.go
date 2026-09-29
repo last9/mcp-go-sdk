@@ -82,6 +82,9 @@ func (s *Last9MCPServer) requestMiddleware(next sdkmcp.MethodHandler) sdkmcp.Met
 func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.MethodHandler, req sdkmcp.Request) (sdkmcp.Result, error) {
 	info := s.extractClientInfo(req)
 	clientID := s.generateClientID(info)
+	if sid := sessionID(req); sid != "" {
+		clientID = sessionClientID(info, sid)
+	}
 
 	ctx = context.WithValue(ctx, contextKeyClientID, clientID)
 	ctx = context.WithValue(ctx, contextKeyClientInfo, info)
@@ -499,7 +502,7 @@ func (s *Last9MCPServer) attachClientContext(ctx context.Context, req sdkmcp.Req
 	}
 
 	info := s.clientInfoFromRequest(req)
-	clientID := s.resolveClientID(ctx, info)
+	clientID := s.resolveClientID(ctx, req, info)
 	s.sessions.ensure(clientID, info)
 
 	ctx = context.WithValue(ctx, contextKeyClientID, clientID)
@@ -553,6 +556,25 @@ func (s *Last9MCPServer) generateClientID(info ClientInfo) string {
 	return fmt.Sprintf("%s_%s_%d_%d", info.Name, info.Transport, pid, time.Now().UnixNano())
 }
 
+// sessionID returns the MCP session ID of the connection req arrived on, or ""
+// when the transport does not assign one (stdio, stateless HTTP).
+func sessionID(req sdkmcp.Request) string {
+	if req == nil {
+		return ""
+	}
+	if ss, ok := req.GetSession().(*sdkmcp.ServerSession); ok && ss != nil {
+		return ss.ID()
+	}
+	return ""
+}
+
+// sessionClientID returns the client ID for a client on MCP session sid.
+// Initialize and every later request on that session resolve to the same ID,
+// so clients that share a name and version stay distinct.
+func sessionClientID(info ClientInfo, sid string) string {
+	return fmt.Sprintf("%s_%s_%s", info.Name, info.Transport, sid)
+}
+
 // stableClientID returns a deterministic ID for stateless per-request clients
 // that identify themselves via _meta on every call. Anonymous requests cannot
 // be correlated safely, so each gets an isolated per-request ID instead of
@@ -576,9 +598,12 @@ func (s *Last9MCPServer) removeUnattributedSession(info ClientInfo, clientID str
 }
 
 // resolveClientID picks the client ID for a non-initialize request.
-func (s *Last9MCPServer) resolveClientID(ctx context.Context, info ClientInfo) string {
+func (s *Last9MCPServer) resolveClientID(ctx context.Context, req sdkmcp.Request, info ClientInfo) string {
 	if id, ok := ctx.Value(contextKeyClientID).(string); ok && id != "" {
 		return id
+	}
+	if sid := sessionID(req); sid != "" {
+		return sessionClientID(info, sid)
 	}
 	if s.transport() == "stdio" {
 		s.mu.RLock()
