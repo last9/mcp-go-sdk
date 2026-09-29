@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -47,6 +48,21 @@ func defaultConfig() *config {
 	}
 }
 
+// instrumented reports whether method should produce spans and metrics. It is
+// false for every method in an operation family turned off with
+// WithDisableResources, WithDisablePrompts, or WithDisableSampling.
+func (c *config) instrumented(method string) bool {
+	switch {
+	case strings.HasPrefix(method, "resources/"):
+		return c.instrumentResources
+	case strings.HasPrefix(method, "prompts/"):
+		return c.instrumentPrompts
+	case method == opSamplingCreate:
+		return c.instrumentSampling
+	}
+	return true
+}
+
 // Option configures observability behaviour for a Last9MCPServer.
 type Option func(*config)
 
@@ -90,19 +106,20 @@ func WithLogLevel(level slog.Level) Option {
 }
 
 // WithDisableResources disables span and metric instrumentation for all
-// resources/* operations.
+// resources/* operations. Requests are still passed through to the handler.
 func WithDisableResources() Option {
 	return func(c *config) { c.instrumentResources = false }
 }
 
 // WithDisablePrompts disables span and metric instrumentation for all
-// prompts/* operations.
+// prompts/* operations. Requests are still passed through to the handler.
 func WithDisablePrompts() Option {
 	return func(c *config) { c.instrumentPrompts = false }
 }
 
 // WithDisableSampling disables span and metric instrumentation for
-// sampling/createMessage operations.
+// sampling/createMessage operations. Requests are still passed through to
+// the handler.
 func WithDisableSampling() Option {
 	return func(c *config) { c.instrumentSampling = false }
 }

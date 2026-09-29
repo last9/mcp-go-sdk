@@ -178,21 +178,17 @@ func (c *Last9MCPClient) Shutdown(ctx context.Context) error {
 // handlers that create spans and record metrics.
 func (c *Last9MCPClient) clientMiddleware(next sdkmcp.MethodHandler) sdkmcp.MethodHandler {
 	return func(ctx context.Context, method string, req sdkmcp.Request) (sdkmcp.Result, error) {
+		if !c.cfg.instrumented(method) {
+			return next(ctx, method, req)
+		}
+
 		switch method {
 		case opToolsCall:
 			return c.handleClientToolCall(ctx, next, req)
 		case opResourcesRead:
-			if c.cfg.instrumentResources {
-				return c.handleClientResourceRead(ctx, next, req)
-			}
+			return c.handleClientResourceRead(ctx, next, req)
 		case opPromptsGet:
-			if c.cfg.instrumentPrompts {
-				return c.handleClientPromptGet(ctx, next, req)
-			}
-		case opSamplingCreate:
-			if c.cfg.instrumentSampling {
-				return c.handleClientSimpleOp(ctx, next, method, req)
-			}
+			return c.handleClientPromptGet(ctx, next, req)
 		}
 		return c.handleClientSimpleOp(ctx, next, method, req)
 	}

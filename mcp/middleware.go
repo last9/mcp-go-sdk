@@ -45,29 +45,19 @@ func (s *Last9MCPServer) requestMiddleware(next sdkmcp.MethodHandler) sdkmcp.Met
 		ctx = s.attachClientContext(ctx, req)
 		defer s.removeUnattributedSession(clientInfoFromCtx(ctx, s), clientIDFromCtx(ctx))
 
+		if !s.cfg.instrumented(method) {
+			return next(ctx, method, req)
+		}
+
 		switch method {
 		case opToolsCall:
 			return s.handleToolsCall(ctx, next, req)
 		case opResourcesRead:
-			if s.cfg.instrumentResources {
-				return s.handleResourcesRead(ctx, next, req)
-			}
-		case opResourcesList:
-			if s.cfg.instrumentResources {
-				return s.handleSimpleOp(ctx, next, method, req)
-			}
+			return s.handleResourcesRead(ctx, next, req)
 		case opPromptsGet:
-			if s.cfg.instrumentPrompts {
-				return s.handlePromptsGet(ctx, next, req)
-			}
-		case opPromptsList:
-			if s.cfg.instrumentPrompts {
-				return s.handleSimpleOp(ctx, next, method, req)
-			}
+			return s.handlePromptsGet(ctx, next, req)
 		case opSamplingCreate:
-			if s.cfg.instrumentSampling {
-				return s.handleSamplingCreate(ctx, next, req)
-			}
+			return s.handleSamplingCreate(ctx, next, req)
 		case opToolsList:
 			// tools/list signals the end of a query cycle.
 			result, err := s.handleSimpleOp(ctx, next, method, req)
