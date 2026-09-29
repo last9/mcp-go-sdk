@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -47,6 +48,21 @@ func defaultConfig() *config {
 	}
 }
 
+// instrumented reports whether method should produce spans and metrics. It is
+// false for every method in an operation family turned off with
+// WithDisableResources, WithDisablePrompts, or WithDisableSampling.
+func (c *config) instrumented(method string) bool {
+	switch {
+	case strings.HasPrefix(method, "resources/"):
+		return c.instrumentResources
+	case strings.HasPrefix(method, "prompts/"):
+		return c.instrumentPrompts
+	case method == opSamplingCreate:
+		return c.instrumentSampling
+	}
+	return true
+}
+
 // Option configures observability behaviour for a Last9MCPServer.
 type Option func(*config)
 
@@ -66,7 +82,10 @@ func WithDisablePromptCapture() Option {
 	return func(c *config) { c.capturePromptArgs = false }
 }
 
-// WithDisableSamplingCapture disables recording sampling message content in spans.
+// WithDisableSamplingCapture stops recording the requested model on
+// sampling/createMessage spans. By default the first named model preference
+// hint is recorded as mcp.sampling.model and gen_ai.request.model. Message
+// content is never recorded, with or without this option.
 func WithDisableSamplingCapture() Option {
 	return func(c *config) { c.captureSamplingArgs = false }
 }
@@ -83,26 +102,28 @@ func WithQueryTimeout(d time.Duration) Option {
 	return func(c *config) { c.queryTimeout = d }
 }
 
-// WithLogLevel sets the minimum severity for log records exported to the OTel
-// log pipeline. Default: slog.LevelInfo.
+// WithLogLevel sets the minimum severity of the log records the SDK emits.
+// It applies to the OTel log pipeline and, with WithSkipProviderInit, to
+// slog.Default(). Default: slog.LevelInfo.
 func WithLogLevel(level slog.Level) Option {
 	return func(c *config) { c.logLevel = level }
 }
 
 // WithDisableResources disables span and metric instrumentation for all
-// resources/* operations.
+// resources/* operations. Requests are still passed through to the handler.
 func WithDisableResources() Option {
 	return func(c *config) { c.instrumentResources = false }
 }
 
 // WithDisablePrompts disables span and metric instrumentation for all
-// prompts/* operations.
+// prompts/* operations. Requests are still passed through to the handler.
 func WithDisablePrompts() Option {
 	return func(c *config) { c.instrumentPrompts = false }
 }
 
 // WithDisableSampling disables span and metric instrumentation for
-// sampling/createMessage operations.
+// sampling/createMessage operations. Requests are still passed through to
+// the handler.
 func WithDisableSampling() Option {
 	return func(c *config) { c.instrumentSampling = false }
 }
