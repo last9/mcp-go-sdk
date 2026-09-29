@@ -98,6 +98,7 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 	} else {
 		logger = slog.Default()
 	}
+	logger = withMinLevel(logger, cfg.logLevel)
 
 	tracer := otel.Tracer(serverName)
 	inst, err := initInstruments(otel.Meter(serverName))
