@@ -139,3 +139,35 @@ func TestLogLevel_Unset_RespectsHostHandlersThreshold(t *testing.T) {
 		t.Error("info enabled although the host handler only accepts warn and above")
 	}
 }
+
+type suppressKey struct{}
+
+// contextFilterHandler rejects every record whose context is marked with
+// suppressKey, regardless of level, the way sampling or per-request
+// filtering handlers do.
+type contextFilterHandler struct{ recordingHandler }
+
+func (h contextFilterHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	if ctx.Value(suppressKey{}) != nil {
+		return false
+	}
+	return h.recordingHandler.Enabled(ctx, l)
+}
+
+func TestWithLogLevel_KeepsHostHandlersNonLevelFiltering(t *testing.T) {
+	var records []slog.Record
+	useDefaultLogger(t, contextFilterHandler{recordingHandler{minLevel: slog.LevelInfo, records: &records}})
+	installTestProviders(t)
+
+	s, err := NewServerWithOptions("test-server", "1.0.0",
+		WithSkipProviderInit(), WithLogLevel(slog.LevelDebug))
+	if err != nil {
+		t.Fatalf("NewServerWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+
+	suppressed := context.WithValue(context.Background(), suppressKey{}, true)
+	if s.logger.Enabled(suppressed, slog.LevelError) {
+		t.Error("record enabled although the host handler rejects its context")
+	}
+}
