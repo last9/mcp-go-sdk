@@ -70,14 +70,10 @@ func NewClientWithOptions(clientName, version string, opts ...Option) (*Last9MCP
 	var logger *slog.Logger
 
 	if !cfg.skipOTelInit {
-		resReal, tpInit, mpInit, err := initOpenTelemetry(ctx, clientName, version)
+		var err error
+		tp, mp, lp, logger, err = initOpenTelemetry(ctx, clientName, version)
 		if err != nil {
 			return nil, fmt.Errorf("initializing OpenTelemetry: %w", err)
-		}
-		tp, mp = tpInit, mpInit
-		logger, lp, err = initLogging(ctx, resReal)
-		if err != nil {
-			return nil, fmt.Errorf("initializing logging: %w", err)
 		}
 	} else {
 		logger = slog.Default()

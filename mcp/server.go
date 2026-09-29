@@ -12,8 +12,6 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -82,15 +80,10 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 	var logger *slog.Logger
 
 	if !cfg.skipOTelInit {
-		var res *resource.Resource
 		var err error
-		res, tp, mp, err = initOpenTelemetry(ctx, serverName, version)
+		tp, mp, lp, logger, err = initOpenTelemetry(ctx, serverName, version)
 		if err != nil {
 			return nil, fmt.Errorf("initializing OpenTelemetry: %w", err)
-		}
-		logger, lp, err = initLogging(ctx, res)
-		if err != nil {
-			return nil, fmt.Errorf("initializing logging: %w", err)
 		}
 	} else {
 		logger = slog.Default()
@@ -128,9 +121,12 @@ func NewServerWithOptions(serverName, version string, opts ...Option) (*Last9MCP
 	return s, nil
 }
 
-// initOpenTelemetry sets up the global trace and metric providers, returning
-// the shared resource plus both providers for later shutdown.
-func initOpenTelemetry(ctx context.Context, serviceName, version string) (*resource.Resource, *sdktrace.TracerProvider, *sdkmetric.MeterProvider, error) {
+// initOpenTelemetry builds the trace, metric, and log pipelines and returns
+// their providers for later shutdown, plus a logger bridged into the log
+// pipeline. The trace and metric providers are registered as the OTel globals
+// only once every pipeline has been created. If any step fails, whatever was
+// already created is shut down and the globals are left untouched.
+func initOpenTelemetry(ctx context.Context, serviceName, version string) (*sdktrace.TracerProvider, *sdkmetric.MeterProvider, *sdklog.LoggerProvider, *slog.Logger, error) {
 	res, err := resource.New(ctx,
 		resource.WithFromEnv(), // honour OTEL_RESOURCE_ATTRIBUTES
 		resource.WithProcess(),
@@ -147,28 +143,24 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*resou
 		// warnings as non-fatal so the server still starts.
 		slog.Warn("mcp resource creation had warnings", "err", err)
 		if res == nil {
-			return nil, nil, nil, fmt.Errorf("creating resource: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("creating resource: %w", err)
 		}
 	}
 
-	traceExp, err := otlptracehttp.New(ctx)
+	traceExp, err := newTraceExporter(ctx)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("creating trace exporter: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("creating trace exporter: %w", err)
 	}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())),
 	)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
 
-	metricExp, err := otlpmetrichttp.New(ctx)
+	metricExp, err := newMetricExporter(ctx)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("creating metric exporter: %w", err)
+		_ = tp.Shutdown(ctx)
+		return nil, nil, nil, nil, fmt.Errorf("creating metric exporter: %w", err)
 	}
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
@@ -176,9 +168,22 @@ func initOpenTelemetry(ctx context.Context, serviceName, version string) (*resou
 			sdkmetric.WithInterval(10*time.Second),
 		)),
 	)
-	otel.SetMeterProvider(mp)
 
-	return res, tp, mp, nil
+	logger, lp, err := initLogging(ctx, res)
+	if err != nil {
+		_ = tp.Shutdown(ctx)
+		_ = mp.Shutdown(ctx)
+		return nil, nil, nil, nil, fmt.Errorf("initializing logging: %w", err)
+	}
+
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	return tp, mp, lp, logger, nil
 }
 
 // Serve starts the server on the given transport and blocks until ctx is
