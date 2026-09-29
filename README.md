@@ -137,7 +137,8 @@ server, err := mcp.NewServerWithOptions("my-server", "1.0.0",
     mcp.WithDisablePromptCapture(),
     mcp.WithDisableSamplingCapture(),
 
-    // Skip entire operation families you don't use
+    // Skip entire operation families you don't use: no spans or metrics,
+    // requests still reach your handlers
     mcp.WithDisableResources(),
     mcp.WithDisablePrompts(),
     mcp.WithDisableSampling(),
