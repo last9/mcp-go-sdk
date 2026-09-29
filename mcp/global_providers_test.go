@@ -64,3 +64,39 @@ func TestNewClient_DoesNotReplaceGlobalProvidersOfRunningServer(t *testing.T) {
 	}
 	span.End()
 }
+
+// If the instance that owns the globals shuts down first, the globals must
+// keep exporting for the instances still running, and must be released once
+// the last of them stops.
+func TestGlobalProviders_OutliveOwnerWhileOtherInstancesRun(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	shutdown := func(f func(context.Context) error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = f(ctx)
+	}
+
+	s, err := NewServer("test-server", "1.0.0")
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	c, err := NewClient("test-client", "1.0.0")
+	if err != nil {
+		shutdown(s.Shutdown)
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	shutdown(s.Shutdown)
+	_, span := otel.Tracer("app").Start(context.Background(), "while-client-runs")
+	if !span.IsRecording() {
+		t.Error("global tracer stopped recording after the owner shut down while the client was still running")
+	}
+	span.End()
+
+	shutdown(c.Shutdown)
+	_, span = otel.Tracer("app").Start(context.Background(), "after-everything-stopped")
+	if span.IsRecording() {
+		t.Error("global tracer provider was never shut down after the last instance stopped")
+	}
+	span.End()
+}
