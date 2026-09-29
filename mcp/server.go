@@ -245,6 +245,10 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 	s.shutdownCancel()
 	if s.sessions != nil {
 		s.sessions.stop()
+		// Release every remaining session before the providers flush, so the
+		// final export does not report clients that are no longer served.
+		// Serve does this on its own exit, but Streamable HTTP never calls it.
+		s.handleServerShutdown()
 	}
 
 	s.mu.Lock()
