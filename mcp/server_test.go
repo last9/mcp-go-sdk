@@ -29,7 +29,7 @@ func testInfra(t *testing.T) (*Last9MCPServer, *tracetest.InMemoryExporter) {
 	if err != nil {
 		t.Fatalf("NewServerWithOptions: %v", err)
 	}
-	s.serverTransport = "stdio"
+	s.setTransport("stdio")
 
 	t.Cleanup(func() {
 		_ = s.Shutdown(context.Background())

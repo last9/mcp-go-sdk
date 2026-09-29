@@ -13,7 +13,7 @@ func TestClientInfoFromRequest_MetaClientInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServerWithOptions: %v", err)
 	}
-	s.serverTransport = "http"
+	s.setTransport("http")
 
 	req := &sdkmcp.CallToolRequest{
 		Params: &sdkmcp.CallToolParamsRaw{
@@ -44,7 +44,7 @@ func TestAttachClientContext_MetaClientInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServerWithOptions: %v", err)
 	}
-	s.serverTransport = "http"
+	s.setTransport("http")
 
 	req := &sdkmcp.CallToolRequest{
 		Params: &sdkmcp.CallToolParamsRaw{
@@ -99,7 +99,7 @@ func TestStableClientID_IdentifiedClientRemainsStable(t *testing.T) {
 
 func TestRequestMiddleware_AnonymousStatelessClientsAreIsolated(t *testing.T) {
 	s, exp := testInfra(t)
-	s.serverTransport = "streamable"
+	s.setTransport("streamable")
 
 	clientIDs := make(chan string, 2)
 	next := func(ctx context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Result, error) {
@@ -157,7 +157,7 @@ func TestRequestMiddleware_AnonymousStatelessClientsAreIsolated(t *testing.T) {
 
 func TestRequestMiddleware_IdentifiedStatelessClientRetainsSession(t *testing.T) {
 	s, _ := testInfra(t)
-	s.serverTransport = "streamable"
+	s.setTransport("streamable")
 
 	var clientID string
 	next := func(ctx context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Result, error) {
@@ -189,7 +189,7 @@ func TestRequestMiddleware_IdentifiedStatelessClientRetainsSession(t *testing.T)
 
 func TestHandleServerDiscover_AnonymousSessionIsRemoved(t *testing.T) {
 	s, _ := testInfra(t)
-	s.serverTransport = "streamable"
+	s.setTransport("streamable")
 
 	var clientID string
 	next := func(ctx context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Result, error) {

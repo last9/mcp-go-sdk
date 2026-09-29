@@ -45,29 +45,19 @@ func (s *Last9MCPServer) requestMiddleware(next sdkmcp.MethodHandler) sdkmcp.Met
 		ctx = s.attachClientContext(ctx, req)
 		defer s.removeUnattributedSession(clientInfoFromCtx(ctx, s), clientIDFromCtx(ctx))
 
+		if !s.cfg.instrumented(method) {
+			return next(ctx, method, req)
+		}
+
 		switch method {
 		case opToolsCall:
 			return s.handleToolsCall(ctx, next, req)
 		case opResourcesRead:
-			if s.cfg.instrumentResources {
-				return s.handleResourcesRead(ctx, next, req)
-			}
-		case opResourcesList:
-			if s.cfg.instrumentResources {
-				return s.handleSimpleOp(ctx, next, method, req)
-			}
+			return s.handleResourcesRead(ctx, next, req)
 		case opPromptsGet:
-			if s.cfg.instrumentPrompts {
-				return s.handlePromptsGet(ctx, next, req)
-			}
-		case opPromptsList:
-			if s.cfg.instrumentPrompts {
-				return s.handleSimpleOp(ctx, next, method, req)
-			}
+			return s.handlePromptsGet(ctx, next, req)
 		case opSamplingCreate:
-			if s.cfg.instrumentSampling {
-				return s.handleSamplingCreate(ctx, next, req)
-			}
+			return s.handleSamplingCreate(ctx, next, req)
 		case opToolsList:
 			// tools/list signals the end of a query cycle.
 			result, err := s.handleSimpleOp(ctx, next, method, req)
@@ -99,7 +89,7 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	// currentClientID is only reliable for stdio, which has one client at a
 	// time. For HTTP/SSE transports multiple clients connect concurrently and
 	// the field would be overwritten by whichever initialize arrives last.
-	if s.serverTransport == "stdio" {
+	if s.transport() == "stdio" {
 		s.mu.Lock()
 		s.currentClientID = clientID
 		s.mu.Unlock()
@@ -120,11 +110,21 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	)
 	defer span.End()
 
-	s.sessions.create(ctx, clientID, info)
-	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(
-		keyMCPServerTransport.String(s.serverTransport),
+	activeAttrs := []attribute.KeyValue{
+		keyMCPServerTransport.String(s.transport()),
 		keyMCPClientName.String(info.Name),
-	))
+	}
+	s.sessions.create(ctx, clientID, info, activeAttrs...)
+	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(activeAttrs...))
+
+	// Release the session when its connection closes. This is the only
+	// disconnect signal for Streamable HTTP, where Serve is never called.
+	if ss, ok := req.GetSession().(*sdkmcp.ServerSession); ok && ss != nil {
+		go func() {
+			_ = ss.Wait()
+			s.handleClientDisconnect(clientID)
+		}()
+	}
 
 	s.logger.InfoContext(ctx, "mcp client connected",
 		"client.id", clientID,
@@ -187,7 +187,7 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 		keyGenAIOperationName.String(opToolsCall),
 		keyGenAIToolName.String(toolName),
 		keyMCPServerName.String(s.serverName),
-		keyMCPServerTransport.String(s.serverTransport),
+		keyMCPServerTransport.String(s.transport()),
 		keyMCPToolName.String(toolName),
 		keyMCPClientName.String(info.Name),
 		keyMCPClientID.String(clientID),
@@ -229,7 +229,7 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	span.AddEvent("tool.invoked", trace.WithAttributes(keyMCPToolName.String(toolName)))
 
 	start := time.Now()
-	mAttrs := toolAttrs(toolName, s.serverTransport, info.Name)
+	mAttrs := toolAttrs(toolName, s.transport(), info.Name)
 	s.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(mAttrs...))
 
 	result, err := next(ctx, opToolsCall, req)
@@ -285,7 +285,7 @@ func (s *Last9MCPServer) handleResourcesRead(ctx context.Context, next sdkmcp.Me
 		keyGenAISystem.String(genAISystem),
 		keyGenAIOperationName.String(opResourcesRead),
 		keyMCPServerName.String(s.serverName),
-		keyMCPServerTransport.String(s.serverTransport),
+		keyMCPServerTransport.String(s.transport()),
 	}
 	info := clientInfoFromCtx(ctx, s)
 	attrs = append(attrs, keyMCPClientName.String(info.Name))
@@ -301,7 +301,7 @@ func (s *Last9MCPServer) handleResourcesRead(ctx context.Context, next sdkmcp.Me
 
 	span.AddEvent("resource.read.started")
 	start := time.Now()
-	mAttrs := baseAttrs(opResourcesRead, s.serverTransport, info.Name)
+	mAttrs := baseAttrs(opResourcesRead, s.transport(), info.Name)
 
 	result, err := next(ctx, opResourcesRead, req)
 	duration := time.Since(start)
@@ -328,7 +328,7 @@ func (s *Last9MCPServer) handlePromptsGet(ctx context.Context, next sdkmcp.Metho
 		keyGenAISystem.String(genAISystem),
 		keyGenAIOperationName.String(opPromptsGet),
 		keyMCPServerName.String(s.serverName),
-		keyMCPServerTransport.String(s.serverTransport),
+		keyMCPServerTransport.String(s.transport()),
 	}
 	info := clientInfoFromCtx(ctx, s)
 	attrs = append(attrs, keyMCPClientName.String(info.Name))
@@ -350,7 +350,7 @@ func (s *Last9MCPServer) handlePromptsGet(ctx context.Context, next sdkmcp.Metho
 	defer span.End()
 
 	start := time.Now()
-	mAttrs := promptAttrs(promptName, s.serverTransport, info.Name)
+	mAttrs := promptAttrs(promptName, s.transport(), info.Name)
 
 	result, err := next(ctx, opPromptsGet, req)
 	duration := time.Since(start)
@@ -369,7 +369,7 @@ func (s *Last9MCPServer) handleSamplingCreate(ctx context.Context, next sdkmcp.M
 		keyGenAISystem.String(genAISystem),
 		keyGenAIOperationName.String(opSamplingCreate),
 		keyMCPServerName.String(s.serverName),
-		keyMCPServerTransport.String(s.serverTransport),
+		keyMCPServerTransport.String(s.transport()),
 	}
 	info := clientInfoFromCtx(ctx, s)
 	attrs = append(attrs, keyMCPClientName.String(info.Name))
@@ -392,7 +392,7 @@ func (s *Last9MCPServer) handleSamplingCreate(ctx context.Context, next sdkmcp.M
 	defer span.End()
 
 	start := time.Now()
-	mAttrs := baseAttrs(opSamplingCreate, s.serverTransport, info.Name)
+	mAttrs := baseAttrs(opSamplingCreate, s.transport(), info.Name)
 
 	result, err := next(ctx, opSamplingCreate, req)
 	duration := time.Since(start)
@@ -414,7 +414,7 @@ func (s *Last9MCPServer) handleSimpleOp(ctx context.Context, next sdkmcp.MethodH
 			keyGenAISystem.String(genAISystem),
 			keyGenAIOperationName.String(method),
 			keyMCPServerName.String(s.serverName),
-			keyMCPServerTransport.String(s.serverTransport),
+			keyMCPServerTransport.String(s.transport()),
 			keyMCPClientName.String(info.Name),
 		),
 	)
@@ -425,7 +425,7 @@ func (s *Last9MCPServer) handleSimpleOp(ctx context.Context, next sdkmcp.MethodH
 	duration := time.Since(start)
 
 	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		baseAttrs(method, s.serverTransport, info.Name)...,
+		baseAttrs(method, s.transport(), info.Name)...,
 	))
 
 	finalizeSpan(span, err)
@@ -510,7 +510,7 @@ func (s *Last9MCPServer) attachClientContext(ctx context.Context, req sdkmcp.Req
 // clientInfoFromRequest reads client identity from per-request _meta
 // (2026-07-28) or legacy initialize params.
 func (s *Last9MCPServer) clientInfoFromRequest(req sdkmcp.Request) ClientInfo {
-	info := ClientInfo{Name: "unknown_client", Version: "unknown", Transport: s.serverTransport}
+	info := ClientInfo{Name: "unknown_client", Version: "unknown", Transport: s.transport()}
 
 	if peer, ok := req.(interface {
 		ClientInfo() *sdkmcp.Implementation
@@ -569,7 +569,7 @@ func (s *Last9MCPServer) stableClientID(info ClientInfo) string {
 // retaining each isolated session until the normal timeout would grow memory
 // with request volume.
 func (s *Last9MCPServer) removeUnattributedSession(info ClientInfo, clientID string) {
-	if info.Name != "unknown_client" || s.serverTransport == "stdio" || clientID == "" {
+	if info.Name != "unknown_client" || s.transport() == "stdio" || clientID == "" {
 		return
 	}
 	s.sessions.forceRemove(context.Background(), clientID)
@@ -580,7 +580,7 @@ func (s *Last9MCPServer) resolveClientID(ctx context.Context, info ClientInfo) s
 	if id, ok := ctx.Value(contextKeyClientID).(string); ok && id != "" {
 		return id
 	}
-	if s.serverTransport == "stdio" {
+	if s.transport() == "stdio" {
 		s.mu.RLock()
 		id := s.currentClientID
 		s.mu.RUnlock()
@@ -603,7 +603,7 @@ func (s *Last9MCPServer) getCurrentClientID(ctx context.Context) string {
 	// wrong session (M1).
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.serverTransport == "stdio" && s.currentClientID != "" {
+	if s.transport() == "stdio" && s.currentClientID != "" {
 		return s.currentClientID
 	}
 	return "unknown_client"
