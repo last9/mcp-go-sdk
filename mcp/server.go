@@ -49,6 +49,11 @@ type Last9MCPServer struct {
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 
+	// lifecycleMu serializes session registration with Shutdown's final
+	// sweep; closed is set once that sweep has run.
+	lifecycleMu sync.Mutex
+	closed      bool
+
 	// Held for Shutdown so we can flush all three OTel pipelines.
 	traceProvider  *sdktrace.TracerProvider
 	metricProvider *sdkmetric.MeterProvider
@@ -247,8 +252,13 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 		s.sessions.stop()
 		// Release every remaining session before the providers flush, so the
 		// final export does not report clients that are no longer served.
-		// Serve does this on its own exit, but Streamable HTTP never calls it.
+		// Serve does this on its own exit, but Streamable HTTP never calls it,
+		// and its handlers can still be initializing sessions, so close
+		// registration first.
+		s.lifecycleMu.Lock()
+		s.closed = true
 		s.handleServerShutdown()
+		s.lifecycleMu.Unlock()
 	}
 
 	s.mu.Lock()

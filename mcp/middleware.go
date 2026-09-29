@@ -113,16 +113,11 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	)
 	defer span.End()
 
-	activeAttrs := []attribute.KeyValue{
-		keyMCPServerTransport.String(s.transport()),
-		keyMCPClientName.String(info.Name),
-	}
-	s.sessions.create(ctx, clientID, info, activeAttrs...)
-	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(activeAttrs...))
+	registered := s.registerSession(ctx, clientID, info)
 
 	// Release the session when its connection closes. This is the only
 	// disconnect signal for Streamable HTTP, where Serve is never called.
-	if ss, ok := req.GetSession().(*sdkmcp.ServerSession); ok && ss != nil {
+	if ss, ok := req.GetSession().(*sdkmcp.ServerSession); ok && ss != nil && registered {
 		go func() {
 			_ = ss.Wait()
 			s.handleClientDisconnect(clientID)
@@ -136,6 +131,27 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 	)
 
 	return next(ctx, opInitialize, req)
+}
+
+// registerSession stores a newly initialized session and counts it in
+// mcp.active.sessions. It is serialized with Shutdown's final session sweep,
+// so a session is either counted before the sweep (and released by it) or,
+// once Shutdown has begun, not registered at all. It reports whether the
+// session was registered.
+func (s *Last9MCPServer) registerSession(ctx context.Context, clientID string, info ClientInfo) bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closed {
+		return false
+	}
+
+	activeAttrs := []attribute.KeyValue{
+		keyMCPServerTransport.String(s.transport()),
+		keyMCPClientName.String(info.Name),
+	}
+	s.sessions.create(ctx, clientID, info, activeAttrs...)
+	s.inst.activeSessions.Add(ctx, 1, metric.WithAttributes(activeAttrs...))
+	return true
 }
 
 // handleServerDiscover instruments the 2026-07-28 discover RPC and registers
