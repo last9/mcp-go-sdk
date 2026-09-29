@@ -39,24 +39,20 @@ func initLogging(ctx context.Context, res *resource.Resource) (*slog.Logger, *lo
 }
 
 // withMinLevel returns a logger that drops records below level before they
-// reach logger's handler. With override, level alone decides what is enabled;
-// otherwise the wrapped handler's own threshold also applies.
-func withMinLevel(logger *slog.Logger, level slog.Level, override bool) *slog.Logger {
-	return slog.New(levelHandler{level: level, override: override, handler: logger.Handler()})
+// reach logger's handler. The handler's own Enabled decision still applies,
+// so this can only make logging stricter.
+func withMinLevel(logger *slog.Logger, level slog.Level) *slog.Logger {
+	return slog.New(levelHandler{level: level, handler: logger.Handler()})
 }
 
-// levelHandler is a slog.Handler that enforces a minimum level on the
+// levelHandler is a slog.Handler that enforces a minimum level on top of the
 // handler it wraps.
 type levelHandler struct {
-	level    slog.Level
-	override bool
-	handler  slog.Handler
+	level   slog.Level
+	handler slog.Handler
 }
 
 func (h levelHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	if h.override {
-		return level >= h.level
-	}
 	return level >= h.level && h.handler.Enabled(ctx, level)
 }
 
@@ -65,9 +61,9 @@ func (h levelHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h levelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return levelHandler{level: h.level, override: h.override, handler: h.handler.WithAttrs(attrs)}
+	return levelHandler{level: h.level, handler: h.handler.WithAttrs(attrs)}
 }
 
 func (h levelHandler) WithGroup(name string) slog.Handler {
-	return levelHandler{level: h.level, override: h.override, handler: h.handler.WithGroup(name)}
+	return levelHandler{level: h.level, handler: h.handler.WithGroup(name)}
 }

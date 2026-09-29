@@ -107,24 +107,7 @@ func TestWithLogLevel_AppliesToStartupWarnings(t *testing.T) {
 	}
 }
 
-func TestWithLogLevel_CanLowerTheHostHandlersThreshold(t *testing.T) {
-	var records []slog.Record
-	useDefaultLogger(t, recordingHandler{minLevel: slog.LevelInfo, records: &records})
-	installTestProviders(t)
-
-	s, err := NewServerWithOptions("test-server", "1.0.0",
-		WithSkipProviderInit(), WithLogLevel(slog.LevelDebug))
-	if err != nil {
-		t.Fatalf("NewServerWithOptions: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
-
-	if !s.logger.Enabled(context.Background(), slog.LevelDebug) {
-		t.Error("debug disabled despite WithLogLevel(Debug)")
-	}
-}
-
-func TestLogLevel_Unset_RespectsHostHandlersThreshold(t *testing.T) {
+func TestLogLevel_Default_RespectsHostHandlersThreshold(t *testing.T) {
 	var records []slog.Record
 	useDefaultLogger(t, recordingHandler{minLevel: slog.LevelWarn, records: &records})
 	installTestProviders(t)
