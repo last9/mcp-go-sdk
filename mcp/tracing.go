@@ -49,6 +49,7 @@ type sessionStore struct {
 	mu       sync.RWMutex
 	cleanup  *time.Ticker
 	done     chan struct{}
+	stopOnce sync.Once
 	cfg      *config
 	logger   *slog.Logger
 }
@@ -75,6 +76,14 @@ func (s *sessionStore) runCleanup() {
 			return
 		}
 	}
+}
+
+// stop halts the background cleanup goroutine. It is safe to call more than once.
+func (s *sessionStore) stop() {
+	s.stopOnce.Do(func() {
+		s.cleanup.Stop()
+		close(s.done)
+	})
 }
 
 func (s *sessionStore) create(ctx context.Context, clientID string, info ClientInfo) {
