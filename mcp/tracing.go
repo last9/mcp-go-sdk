@@ -64,9 +64,13 @@ type sessionStore struct {
 	// It is called without any store locks held.
 	onRemove func(ctx context.Context, sess *clientSession)
 
-	// removals counts sessions that have left the map but whose onRemove
-	// callback has not finished yet.
-	removals sync.WaitGroup
+	// pendingRemovals counts sessions that have left the map but whose
+	// onRemove callback has not finished yet. It is guarded by mu, and
+	// removalsDone is signalled when it drops to zero. A counter and
+	// condition variable are used rather than a sync.WaitGroup because new
+	// removals may start while waitForRemovals is waiting.
+	pendingRemovals int
+	removalsDone    *sync.Cond
 }
 
 func newSessionStore(cfg *config, logger *slog.Logger, onRemove func(context.Context, *clientSession)) *sessionStore {
@@ -251,7 +255,7 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 		sess.activeQueries = make(map[string]*storedQuery)
 		sess.mu.Unlock()
 		delete(s.sessions, clientID)
-		s.removals.Add(1)
+		s.pendingRemovals++
 	}
 	s.mu.Unlock()
 
@@ -264,9 +268,16 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 }
 
 // notifyRemoved runs the onRemove callback for a session that has left the
-// map. The caller must have registered it in removals while holding s.mu.
+// map. The caller must have counted it in pendingRemovals while holding s.mu.
 func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
-	defer s.removals.Done()
+	defer func() {
+		s.mu.Lock()
+		s.pendingRemovals--
+		if s.pendingRemovals == 0 {
+			s.removalsDoneCond().Broadcast()
+		}
+		s.mu.Unlock()
+	}()
 	if s.onRemove != nil {
 		s.onRemove(ctx, sess)
 	}
@@ -275,7 +286,20 @@ func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
 // waitForRemovals blocks until every session already taken out of the store
 // has finished its onRemove callback.
 func (s *sessionStore) waitForRemovals() {
-	s.removals.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.pendingRemovals > 0 {
+		s.removalsDoneCond().Wait()
+	}
+}
+
+// removalsDoneCond returns removalsDone, creating it on first use. The
+// caller must hold s.mu.
+func (s *sessionStore) removalsDoneCond() *sync.Cond {
+	if s.removalsDone == nil {
+		s.removalsDone = sync.NewCond(&s.mu)
+	}
+	return s.removalsDone
 }
 
 func (s *sessionStore) cleanupStale(ctx context.Context) {
@@ -319,7 +343,7 @@ func (s *sessionStore) cleanupStale(ctx context.Context) {
 			removed := s.sessions[clientID] == sess
 			if removed {
 				delete(s.sessions, clientID)
-				s.removals.Add(1)
+				s.pendingRemovals++
 			}
 			s.mu.Unlock()
 

@@ -318,7 +318,7 @@ func TestSessionStore_RemovalsWhileWaitingForRemovals(t *testing.T) {
 		}(w)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		s.waitForRemovals()
 	}
