@@ -241,6 +241,7 @@ func (s *Last9MCPServer) handleServerShutdown() {
 }
 
 // Shutdown flushes and closes all three OTel pipelines (traces, metrics, logs).
+// It is safe to call more than once.
 func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "mcp server shutting down")
 
@@ -248,8 +249,7 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 		s.transportCancel()
 	}
 	if s.sessions != nil {
-		s.sessions.cleanup.Stop()
-		close(s.sessions.done)
+		s.sessions.stop()
 	}
 
 	s.mu.Lock()
