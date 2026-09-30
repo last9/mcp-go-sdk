@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -289,5 +290,94 @@ func TestActiveSessions_ShutdownWaitsForInFlightRemovals(t *testing.T) {
 
 	if got := activeSessions(t, reader); got != 0 {
 		t.Errorf("mcp.active.sessions = %d after Shutdown, want 0", got)
+	}
+}
+
+// Streamable HTTP handlers keep serving after Shutdown. A client that
+// connects then must still have its session released when it disconnects,
+// even though it is never counted.
+func TestSessions_ClientConnectedAfterShutdownIsReleasedOnDisconnect(t *testing.T) {
+	s, _ := gaugeInfra(t)
+	ctx := context.Background()
+
+	tool := &sdkmcp.Tool{Name: "echo", Description: "echo text"}
+	if err := RegisterInstrumentedTool(s, tool, func(ctx context.Context, req *sdkmcp.CallToolRequest, args struct {
+		Text string `json:"text"`
+	}) (*sdkmcp.CallToolResult, any, error) {
+		return &sdkmcp.CallToolResult{}, nil, nil
+	}); err != nil {
+		t.Fatalf("RegisterInstrumentedTool: %v", err)
+	}
+
+	srv := httptest.NewServer(s.NewStreamableHTTPHandler(nil))
+	defer srv.Close()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "cursor", Version: "1.0"}, nil)
+	cs, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: srv.URL}, nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if _, err := cs.CallTool(ctx, &sdkmcp.CallToolParams{Name: "echo", Arguments: map[string]any{"text": "hi"}}); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	sessionID := sessionClientID(ClientInfo{Name: "cursor", Transport: "streamable"}, cs.ID())
+	if _, ok := s.sessions.getInfo(sessionID); !ok {
+		t.Fatalf("expected session %q to be stored while connected, have %v", sessionID, s.sessions.allClientIDs())
+	}
+	_ = cs.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := s.sessions.getInfo(sessionID); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session %q still stored after the client disconnected", sessionID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Shutdown must respect its context even if a session removal it is waiting
+// for never finishes (for example a blocking custom meter).
+func TestShutdown_HonorsContextWhileWaitingForRemovals(t *testing.T) {
+	s, _ := gaugeInfra(t)
+	s.setTransport("stdio")
+
+	req := &sdkmcp.InitializeRequest{Params: &sdkmcp.InitializeParams{
+		ClientInfo: &sdkmcp.Implementation{Name: "cursor", Version: "1.0"},
+	}}
+	if _, err := s.handleInitialize(context.Background(), noop, req); err != nil {
+		t.Fatalf("handleInitialize: %v", err)
+	}
+	ids := s.sessions.allClientIDs()
+
+	removed := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	onRemove := s.sessions.onRemove
+	s.sessions.onRemove = func(ctx context.Context, sess *clientSession) {
+		close(removed)
+		<-release
+		onRemove(ctx, sess)
+	}
+	go s.handleClientDisconnect(ids[0])
+	<-removed
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() { errc <- s.Shutdown(ctx) }()
+
+	select {
+	case err := <-errc:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Shutdown error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown ignored its context while waiting for a removal")
 	}
 }
