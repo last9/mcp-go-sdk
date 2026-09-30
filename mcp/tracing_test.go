@@ -320,7 +320,7 @@ func TestSessionStore_RemovalsWhileWaitingForRemovals(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		s.waitForRemovals()
+		_ = s.waitForRemovals(context.Background())
 	}
 	close(stop)
 	wg.Wait()

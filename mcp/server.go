@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -248,6 +249,7 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "mcp server shutting down")
 
 	s.shutdownCancel()
+	var waitErr error
 	if s.sessions != nil {
 		s.sessions.stop()
 		// Release every remaining session before the providers flush, so the
@@ -260,15 +262,16 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 		s.handleServerShutdown()
 		s.lifecycleMu.Unlock()
 		// A disconnect or expiry that raced with the sweep may still be
-		// recording its decrement; let it finish before flushing.
-		s.sessions.waitForRemovals()
+		// recording its decrement; let it finish before flushing, unless the
+		// caller's deadline runs out first.
+		waitErr = s.sessions.waitForRemovals(ctx)
 	}
 
 	s.mu.Lock()
 	s.currentClientID = ""
 	s.mu.Unlock()
 
-	if err := shutdownProviders(ctx, s.traceProvider, s.metricProvider, s.logProvider); err != nil {
+	if err := errors.Join(waitErr, shutdownProviders(ctx, s.traceProvider, s.metricProvider, s.logProvider)); err != nil {
 		return err
 	}
 

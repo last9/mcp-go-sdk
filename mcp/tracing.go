@@ -295,13 +295,28 @@ func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
 }
 
 // waitForRemovals blocks until every counted session already taken out of
-// the store has finished its onRemove callback.
-func (s *sessionStore) waitForRemovals() {
+// the store has finished its onRemove callback, or until ctx is done, in
+// which case it returns ctx's error.
+func (s *sessionStore) waitForRemovals(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Wake the wait below when ctx is done. Broadcasting under s.mu ensures
+	// the wakeup cannot fall between the ctx check and Wait.
+	stop := context.AfterFunc(ctx, func() {
+		s.mu.Lock()
+		s.removalsDoneCond().Broadcast()
+		s.mu.Unlock()
+	})
+	defer stop()
+
 	for s.pendingRemovals > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s.removalsDoneCond().Wait()
 	}
+	return nil
 }
 
 // removalsDoneCond returns removalsDone, creating it on first use. The
