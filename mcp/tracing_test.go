@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -292,10 +293,10 @@ func TestSessionStore_LatestQuery_ConcurrentSafe(t *testing.T) {
 	wg.Wait()
 }
 
-// Stateless requests keep creating and removing sessions while Shutdown
-// waits for in-flight removals, so a removal must be able to start while
-// another goroutine is waiting on earlier ones.
-func TestSessionStore_RemovalsWhileWaitingForRemovals(t *testing.T) {
+// Stateless requests keep creating and removing uncounted sessions while
+// Shutdown waits for in-flight removals. Those removals must not block the
+// wait or interfere with it.
+func TestSessionStore_UncountedRemovalsWhileWaitingForRemovals(t *testing.T) {
 	s := newTestStore(t)
 	s.onRemove = func(context.Context, *clientSession) { time.Sleep(time.Microsecond) }
 
@@ -320,8 +321,54 @@ func TestSessionStore_RemovalsWhileWaitingForRemovals(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		_ = s.waitForRemovals(context.Background())
+		if err := s.waitForRemovals(context.Background()); err != nil {
+			t.Fatalf("waitForRemovals: %v", err)
+		}
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// A counted removal that starts while waitForRemovals is already blocked on
+// another one must be waited for too, and the wait must end once both finish.
+func TestSessionStore_WaitForRemovalsCoversRemovalsStartedDuringWait(t *testing.T) {
+	s := newTestStore(t)
+	counted := attribute.String("mcp.client.name", "cursor")
+	s.create(context.Background(), "a", ClientInfo{Name: "a"}, counted)
+	s.create(context.Background(), "b", ClientInfo{Name: "b"}, counted)
+
+	started := make(chan string, 2)
+	release := map[string]chan struct{}{"a": make(chan struct{}), "b": make(chan struct{})}
+	s.onRemove = func(_ context.Context, sess *clientSession) {
+		started <- sess.info.Name
+		<-release[sess.info.Name]
+	}
+
+	go s.forceRemove(context.Background(), "a")
+	<-started
+
+	waited := make(chan error, 1)
+	go func() { waited <- s.waitForRemovals(context.Background()) }()
+
+	// Start the second removal while the wait is blocked on the first.
+	time.Sleep(20 * time.Millisecond)
+	go s.forceRemove(context.Background(), "b")
+	<-started
+
+	close(release["a"])
+	select {
+	case <-waited:
+		t.Fatal("waitForRemovals returned while a removal was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release["b"])
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("waitForRemovals: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForRemovals did not return after every removal finished")
+	}
 }
