@@ -417,3 +417,35 @@ func TestShutdown_HonorsContextDuringItsOwnSweep(t *testing.T) {
 		t.Fatal("Shutdown ignored its context while its own sweep was blocked")
 	}
 }
+
+// If Shutdown gives up on its sweep because its context ended, it must say
+// so, even when no removal had been recorded yet at that moment.
+func TestShutdown_ReportsCancellationWhenSweepIsCutShort(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		s, _ := gaugeInfra(t)
+		s.setTransport("stdio")
+
+		req := &sdkmcp.InitializeRequest{Params: &sdkmcp.InitializeParams{
+			ClientInfo: &sdkmcp.Implementation{Name: "cursor", Version: "1.0"},
+		}}
+		if _, err := s.handleInitialize(context.Background(), noop, req); err != nil {
+			t.Fatalf("handleInitialize: %v", err)
+		}
+
+		release := make(chan struct{})
+		onRemove := s.sessions.onRemove
+		s.sessions.onRemove = func(ctx context.Context, sess *clientSession) {
+			<-release
+			onRemove(ctx, sess)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := s.Shutdown(ctx)
+		close(release)
+
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("iteration %d: Shutdown error = %v, want context.Canceled", i, err)
+		}
+	}
+}
