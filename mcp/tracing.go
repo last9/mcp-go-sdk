@@ -47,6 +47,16 @@ type clientSession struct {
 	// mcp.active.sessions, or nil if it was never counted. Keeping them lets
 	// the decrement use exactly the attribute set of the original increment.
 	activeAttrs []attribute.KeyValue
+
+	// counted is closed once the session's increment has been recorded, so
+	// its decrement can wait for it. It is nil for uncounted sessions.
+	counted chan struct{}
+}
+
+// markCounted records that the session's increment in mcp.active.sessions
+// has been made. It must be called exactly once for every counted session.
+func (sess *clientSession) markCounted() {
+	close(sess.counted)
 }
 
 // sessionStore manages trace contexts and session metadata for all connected clients.
@@ -66,9 +76,14 @@ type sessionStore struct {
 
 	// pendingRemovals counts sessions counted in mcp.active.sessions that
 	// have left the map but whose onRemove callback has not finished yet.
-	// It is guarded by mu, and removalsDone is signalled when it drops to
-	// zero. Uncounted sessions (stateless clients) are left out: they keep
+	// Uncounted sessions (stateless clients) are left out: they keep
 	// arriving after Shutdown's sweep, and waiting on them could starve.
+	//
+	// It has its own mutex, pendingMu, which is never held while calling
+	// out of the store, so waitForRemovals cannot be held up by a caller
+	// that is stuck while holding mu. removalsDone is signalled on pendingMu
+	// when the count drops to zero.
+	pendingMu       sync.Mutex
 	pendingRemovals int
 	removalsDone    *sync.Cond
 }
@@ -106,34 +121,37 @@ func (s *sessionStore) stop() {
 	})
 }
 
-// create registers a new session. activeAttrs, when given, are the attributes
-// the caller used to count this session in mcp.active.sessions; they are
-// handed back through onRemove when the session is removed.
-func (s *sessionStore) create(ctx context.Context, clientID string, info ClientInfo, activeAttrs ...attribute.KeyValue) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[clientID] = &clientSession{
+// create registers a new session and returns it. activeAttrs, when given,
+// are the attributes the caller counts this session under in
+// mcp.active.sessions; they are handed back through onRemove when the
+// session is removed, and the caller must call markCounted once the
+// increment has been recorded. create does not log, so callers can hold
+// their own locks around it without calling into the application.
+func (s *sessionStore) create(ctx context.Context, clientID string, info ClientInfo, activeAttrs ...attribute.KeyValue) *clientSession {
+	sess := &clientSession{
 		info:          info,
 		activeQueries: make(map[string]*storedQuery),
 		lastActivity:  time.Now(),
 		activeAttrs:   activeAttrs,
 	}
-	s.logger.InfoContext(ctx, "mcp session created",
-		"client.id", clientID,
-		"client.name", info.Name,
-		"client.version", info.Version,
-	)
+	if len(activeAttrs) > 0 {
+		sess.counted = make(chan struct{})
+	}
+	s.mu.Lock()
+	s.sessions[clientID] = sess
+	s.mu.Unlock()
+	return sess
 }
 
 // ensure creates a session when missing and refreshes last-activity otherwise.
 func (s *sessionStore) ensure(clientID string, info ClientInfo) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if sess, ok := s.sessions[clientID]; ok {
 		sess.mu.Lock()
 		sess.info = info
 		sess.lastActivity = time.Now()
 		sess.mu.Unlock()
+		s.mu.Unlock()
 		return
 	}
 	s.sessions[clientID] = &clientSession{
@@ -141,6 +159,9 @@ func (s *sessionStore) ensure(clientID string, info ClientInfo) {
 		activeQueries: make(map[string]*storedQuery),
 		lastActivity:  time.Now(),
 	}
+	s.mu.Unlock()
+
+	// Log outside the lock: the handler is application code.
 	s.logger.Info("mcp session created",
 		"client.id", clientID,
 		"client.name", info.Name,
@@ -268,11 +289,15 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 }
 
 // trackRemoval records that sess has left the map and its removal callback
-// is about to run. The caller must hold s.mu.
+// is about to run. The caller must hold s.mu, so the count is raised before
+// anyone can observe the session as gone.
 func (s *sessionStore) trackRemoval(sess *clientSession) {
-	if len(sess.activeAttrs) > 0 {
-		s.pendingRemovals++
+	if len(sess.activeAttrs) == 0 {
+		return
 	}
+	s.pendingMu.Lock()
+	s.pendingRemovals++
+	s.pendingMu.Unlock()
 }
 
 // notifyRemoved runs the onRemove callback for a session that has left the
@@ -282,12 +307,12 @@ func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
 		if len(sess.activeAttrs) == 0 {
 			return
 		}
-		s.mu.Lock()
+		s.pendingMu.Lock()
 		s.pendingRemovals--
 		if s.pendingRemovals == 0 {
 			s.removalsDoneCond().Broadcast()
 		}
-		s.mu.Unlock()
+		s.pendingMu.Unlock()
 	}()
 	if s.onRemove != nil {
 		s.onRemove(ctx, sess)
@@ -298,15 +323,15 @@ func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
 // the store has finished its onRemove callback, or until ctx is done, in
 // which case it returns ctx's error.
 func (s *sessionStore) waitForRemovals(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
 
-	// Wake the wait below when ctx is done. Broadcasting under s.mu ensures
-	// the wakeup cannot fall between the ctx check and Wait.
+	// Wake the wait below when ctx is done. Broadcasting under pendingMu
+	// ensures the wakeup cannot fall between the ctx check and Wait.
 	stop := context.AfterFunc(ctx, func() {
-		s.mu.Lock()
+		s.pendingMu.Lock()
 		s.removalsDoneCond().Broadcast()
-		s.mu.Unlock()
+		s.pendingMu.Unlock()
 	})
 	defer stop()
 
@@ -320,10 +345,10 @@ func (s *sessionStore) waitForRemovals(ctx context.Context) error {
 }
 
 // removalsDoneCond returns removalsDone, creating it on first use. The
-// caller must hold s.mu.
+// caller must hold s.pendingMu.
 func (s *sessionStore) removalsDoneCond() *sync.Cond {
 	if s.removalsDone == nil {
-		s.removalsDone = sync.NewCond(&s.mu)
+		s.removalsDone = sync.NewCond(&s.pendingMu)
 	}
 	return s.removalsDone
 }

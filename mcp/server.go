@@ -233,6 +233,9 @@ func (s *Last9MCPServer) sessionRemoved(ctx context.Context, sess *clientSession
 	if len(sess.activeAttrs) == 0 {
 		return
 	}
+	// Record the decrement only after the matching increment, which the
+	// registering request makes outside any lock.
+	<-sess.counted
 	// The caller's context may already be cancelled (for example during
 	// shutdown), and the metrics SDK drops writes made with a cancelled context.
 	s.inst.activeSessions.Add(context.WithoutCancel(ctx), -1, metric.WithAttributes(sess.activeAttrs...))
