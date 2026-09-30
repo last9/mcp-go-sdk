@@ -64,11 +64,11 @@ type sessionStore struct {
 	// It is called without any store locks held.
 	onRemove func(ctx context.Context, sess *clientSession)
 
-	// pendingRemovals counts sessions that have left the map but whose
-	// onRemove callback has not finished yet. It is guarded by mu, and
-	// removalsDone is signalled when it drops to zero. A counter and
-	// condition variable are used rather than a sync.WaitGroup because new
-	// removals may start while waitForRemovals is waiting.
+	// pendingRemovals counts sessions counted in mcp.active.sessions that
+	// have left the map but whose onRemove callback has not finished yet.
+	// It is guarded by mu, and removalsDone is signalled when it drops to
+	// zero. Uncounted sessions (stateless clients) are left out: they keep
+	// arriving after Shutdown's sweep, and waiting on them could starve.
 	pendingRemovals int
 	removalsDone    *sync.Cond
 }
@@ -255,7 +255,7 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 		sess.activeQueries = make(map[string]*storedQuery)
 		sess.mu.Unlock()
 		delete(s.sessions, clientID)
-		s.pendingRemovals++
+		s.trackRemoval(sess)
 	}
 	s.mu.Unlock()
 
@@ -267,10 +267,21 @@ func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 	return true
 }
 
+// trackRemoval records that sess has left the map and its removal callback
+// is about to run. The caller must hold s.mu.
+func (s *sessionStore) trackRemoval(sess *clientSession) {
+	if len(sess.activeAttrs) > 0 {
+		s.pendingRemovals++
+	}
+}
+
 // notifyRemoved runs the onRemove callback for a session that has left the
-// map. The caller must have counted it in pendingRemovals while holding s.mu.
+// map. The caller must have passed it to trackRemoval while holding s.mu.
 func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
 	defer func() {
+		if len(sess.activeAttrs) == 0 {
+			return
+		}
 		s.mu.Lock()
 		s.pendingRemovals--
 		if s.pendingRemovals == 0 {
@@ -283,8 +294,8 @@ func (s *sessionStore) notifyRemoved(ctx context.Context, sess *clientSession) {
 	}
 }
 
-// waitForRemovals blocks until every session already taken out of the store
-// has finished its onRemove callback.
+// waitForRemovals blocks until every counted session already taken out of
+// the store has finished its onRemove callback.
 func (s *sessionStore) waitForRemovals() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -343,7 +354,7 @@ func (s *sessionStore) cleanupStale(ctx context.Context) {
 			removed := s.sessions[clientID] == sess
 			if removed {
 				delete(s.sessions, clientID)
-				s.pendingRemovals++
+				s.trackRemoval(sess)
 			}
 			s.mu.Unlock()
 
