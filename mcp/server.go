@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -47,6 +48,12 @@ type Last9MCPServer struct {
 	// Serve whether it is called before, during, or after Serve starts.
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+
+	// lifecycleMu guards closed, which Shutdown sets before its final
+	// session sweep. Registration checks it under the same lock, so every
+	// counted session is either registered before the sweep or not at all.
+	lifecycleMu sync.Mutex
+	closed      bool
 
 	// Held for Shutdown so we can flush all three OTel pipelines.
 	traceProvider  *sdktrace.TracerProvider
@@ -226,6 +233,9 @@ func (s *Last9MCPServer) sessionRemoved(ctx context.Context, sess *clientSession
 	if len(sess.activeAttrs) == 0 {
 		return
 	}
+	// Record the decrement only after the matching increment, which the
+	// registering request makes outside any lock.
+	<-sess.counted
 	// The caller's context may already be cancelled (for example during
 	// shutdown), and the metrics SDK drops writes made with a cancelled context.
 	s.inst.activeSessions.Add(context.WithoutCancel(ctx), -1, metric.WithAttributes(sess.activeAttrs...))
@@ -243,15 +253,43 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "mcp server shutting down")
 
 	s.shutdownCancel()
+	var waitErr error
 	if s.sessions != nil {
 		s.sessions.stop()
+		// Release every remaining session before the providers flush, so the
+		// final export does not report clients that are no longer served.
+		// Serve does this on its own exit, but Streamable HTTP never calls it,
+		// and its handlers can still be initializing sessions, so close
+		// registration first. Once it is closed no new counted session can
+		// appear, so the sweep itself needs no lock.
+		s.lifecycleMu.Lock()
+		s.closed = true
+		s.lifecycleMu.Unlock()
+
+		// Sweep in the background so a removal callback that blocks cannot
+		// hold Shutdown past its deadline. Then wait for the sweep's removals
+		// and any that raced with it to record their decrements, again only
+		// as long as the caller's context allows.
+		swept := make(chan struct{})
+		go func() {
+			defer close(swept)
+			s.handleServerShutdown()
+		}()
+		select {
+		case <-swept:
+			waitErr = s.sessions.waitForRemovals(ctx)
+		case <-ctx.Done():
+			// The sweep is unfinished, so the final export may still count
+			// sessions; report that rather than a clean shutdown.
+			waitErr = ctx.Err()
+		}
 	}
 
 	s.mu.Lock()
 	s.currentClientID = ""
 	s.mu.Unlock()
 
-	if err := shutdownProviders(ctx, s.traceProvider, s.metricProvider, s.logProvider); err != nil {
+	if err := errors.Join(waitErr, shutdownProviders(ctx, s.traceProvider, s.metricProvider, s.logProvider)); err != nil {
 		return err
 	}
 
