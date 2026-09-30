@@ -139,9 +139,9 @@ func (s *Last9MCPServer) handleInitialize(ctx context.Context, next sdkmcp.Metho
 }
 
 // registerSession stores a newly initialized session and counts it in
-// mcp.active.sessions. It is serialized with Shutdown's final session sweep,
-// so a session is either counted before the sweep (and released by it) or,
-// once Shutdown has begun, not registered at all.
+// mcp.active.sessions. Shutdown closes registration before its final
+// session sweep, so a session is either counted before the sweep (and
+// released by it) or, once Shutdown has begun, not registered at all.
 func (s *Last9MCPServer) registerSession(ctx context.Context, clientID string, info ClientInfo) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()

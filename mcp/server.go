@@ -49,8 +49,9 @@ type Last9MCPServer struct {
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 
-	// lifecycleMu serializes session registration with Shutdown's final
-	// sweep; closed is set once that sweep has run.
+	// lifecycleMu guards closed, which Shutdown sets before its final
+	// session sweep. Registration checks it under the same lock, so every
+	// counted session is either registered before the sweep or not at all.
 	lifecycleMu sync.Mutex
 	closed      bool
 
@@ -256,14 +257,25 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 		// final export does not report clients that are no longer served.
 		// Serve does this on its own exit, but Streamable HTTP never calls it,
 		// and its handlers can still be initializing sessions, so close
-		// registration first.
+		// registration first. Once it is closed no new counted session can
+		// appear, so the sweep itself needs no lock.
 		s.lifecycleMu.Lock()
 		s.closed = true
-		s.handleServerShutdown()
 		s.lifecycleMu.Unlock()
-		// A disconnect or expiry that raced with the sweep may still be
-		// recording its decrement; let it finish before flushing, unless the
-		// caller's deadline runs out first.
+
+		// Sweep in the background so a removal callback that blocks cannot
+		// hold Shutdown past its deadline. Then wait for the sweep's removals
+		// and any that raced with it to record their decrements, again only
+		// as long as the caller's context allows.
+		swept := make(chan struct{})
+		go func() {
+			defer close(swept)
+			s.handleServerShutdown()
+		}()
+		select {
+		case <-swept:
+		case <-ctx.Done():
+		}
 		waitErr = s.sessions.waitForRemovals(ctx)
 	}
 
