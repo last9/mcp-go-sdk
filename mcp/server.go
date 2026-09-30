@@ -274,9 +274,12 @@ func (s *Last9MCPServer) Shutdown(ctx context.Context) error {
 		}()
 		select {
 		case <-swept:
+			waitErr = s.sessions.waitForRemovals(ctx)
 		case <-ctx.Done():
+			// The sweep is unfinished, so the final export may still count
+			// sessions; report that rather than a clean shutdown.
+			waitErr = ctx.Err()
 		}
-		waitErr = s.sessions.waitForRemovals(ctx)
 	}
 
 	s.mu.Lock()
