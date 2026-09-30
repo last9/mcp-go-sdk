@@ -381,3 +381,39 @@ func TestShutdown_HonorsContextWhileWaitingForRemovals(t *testing.T) {
 		t.Fatal("Shutdown ignored its context while waiting for a removal")
 	}
 }
+
+// The removals Shutdown performs itself during its sweep must also be
+// bounded by Shutdown's context, not only the ones already in flight.
+func TestShutdown_HonorsContextDuringItsOwnSweep(t *testing.T) {
+	s, _ := gaugeInfra(t)
+	s.setTransport("stdio")
+
+	req := &sdkmcp.InitializeRequest{Params: &sdkmcp.InitializeParams{
+		ClientInfo: &sdkmcp.Implementation{Name: "cursor", Version: "1.0"},
+	}}
+	if _, err := s.handleInitialize(context.Background(), noop, req); err != nil {
+		t.Fatalf("handleInitialize: %v", err)
+	}
+
+	release := make(chan struct{})
+	defer close(release)
+	onRemove := s.sessions.onRemove
+	s.sessions.onRemove = func(ctx context.Context, sess *clientSession) {
+		<-release
+		onRemove(ctx, sess)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() { errc <- s.Shutdown(ctx) }()
+
+	select {
+	case err := <-errc:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Shutdown error = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown ignored its context while its own sweep was blocked")
+	}
+}
