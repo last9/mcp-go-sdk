@@ -377,16 +377,23 @@ func (s *sessionStore) cleanupStale(ctx context.Context) {
 
 		sess.mu.Lock()
 		activeCount := 0
+		var ended []string
 		for id, q := range sess.activeQueries {
 			if q.lastUsed.Before(queryCutoff) {
 				delete(sess.activeQueries, id)
-				s.logger.DebugContext(ctx, "mcp stale query ended", "client.id", clientID, "query.id", id)
+				ended = append(ended, id)
 			} else {
 				activeCount++
 			}
 		}
 		stale := sess.lastActivity.Before(sessionCutoff) && activeCount == 0
 		sess.mu.Unlock()
+
+		// Log after releasing the session lock: the handler is application
+		// code and must not be able to stall requests on this session.
+		for _, id := range ended {
+			s.logger.DebugContext(ctx, "mcp stale query ended", "client.id", clientID, "query.id", id)
+		}
 
 		if stale {
 			s.mu.Lock()
