@@ -64,8 +64,8 @@ func TestHandleToolsCall_SpanHasGenAIAttributes(t *testing.T) {
 	}
 
 	spans := exp.GetSpans()
-	// Expect at least the tool span; a root query span may also be present.
-	if len(spans) < 1 {
+	// Each call emits one tool span.
+	if len(spans) != 1 {
 		t.Fatalf("expected at least 1 span, got %d", len(spans))
 	}
 
@@ -124,47 +124,6 @@ func TestHandleToolsCall_OperationStatusError(t *testing.T) {
 		}
 	}
 	t.Fatal("tool span not found")
-}
-
-func TestHandleToolsCall_QueryCorrelation_SameTraceID(t *testing.T) {
-	s, exp := testInfra(t)
-
-	// Create the session once — re-creating would wipe stored query spans.
-	clientID := "c-corr"
-	info := ClientInfo{Name: "corr-client", Version: "1.0", Transport: "stdio"}
-	s.sessions.create(context.Background(), clientID, info)
-	s.mu.Lock()
-	s.currentClientID = clientID
-	s.mu.Unlock()
-
-	makeCtx := func() context.Context {
-		ctx := context.WithValue(context.Background(), contextKeyClientID, clientID)
-		return context.WithValue(ctx, contextKeyClientInfo, info)
-	}
-
-	// First call — creates the root query span and stores it.
-	req1 := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "tool-a"}}
-	_, _ = s.handleToolsCall(makeCtx(), noop, req1)
-
-	// Second call — should re-use the stored query span (query correlation).
-	req2 := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "tool-b"}}
-	_, _ = s.handleToolsCall(makeCtx(), noop, req2)
-
-	allSpans := exp.GetSpans()
-	var traceIDs []string
-	for _, sp := range allSpans {
-		if sp.Name == toolSpanName("tool-a") || sp.Name == toolSpanName("tool-b") {
-			traceIDs = append(traceIDs, sp.SpanContext.TraceID().String())
-		}
-	}
-
-	if len(traceIDs) != 2 {
-		t.Fatalf("expected 2 tool spans, got %d (spans: %v)", len(traceIDs), spanNames(allSpans))
-	}
-	if traceIDs[0] != traceIDs[1] {
-		t.Errorf("query correlation broken: tool-a traceID %q != tool-b traceID %q",
-			traceIDs[0], traceIDs[1])
-	}
 }
 
 // ── resources/read ────────────────────────────────────────────────────────────
@@ -377,4 +336,3 @@ func TestNewServerWithOptions_SkipProviderInit_ProvidersAreNil(t *testing.T) {
 	_ = tp.Shutdown(context.Background())
 	_ = mp.Shutdown(context.Background())
 }
-

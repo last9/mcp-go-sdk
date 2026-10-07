@@ -82,7 +82,7 @@ These aren't made-up attribute names. They're the emerging standard for AI obser
 
 When Claude calls three tools in a single reasoning turn, those are three separate RPC calls arriving at your server. Without correlation, you get three unrelated traces. That's useless.
 
-We track the query across calls. All tools invoked during the same LLM turn share a root `mcp user_query` span. One trace = one reasoning cycle. You see the whole sequence together, in order, with relative timing. That's how you actually debug what an LLM is doing.
+Tool calls preserve the remote parent from a valid W3C `traceparent` HTTP header, falling back to `_meta.traceparent` (with optional `_meta.tracestate`). Their `mcp.turn.id` is the validated trace ID. Without trace context, `_meta["last9/turn-id"]` or `_meta["x-codex-turn-metadata"].turn_id` supplies a correlation attribute; it does not create a shared parent or trace. Calls without either remain independent. Clients must send turn context on each call; session identity and `tools/list` do not define turn boundaries.
 
 ### Metrics
 
@@ -146,9 +146,8 @@ server, err := mcp.NewServerWithOptions("my-server", "1.0.0",
     // Your app already initialized OTel — don't let us clobber it
     mcp.WithSkipProviderInit(),
 
-    // How long before we consider a session or query dead
+    // How long before we consider a session idle
     mcp.WithSessionTimeout(15 * time.Minute),
-    mcp.WithQueryTimeout(5 * time.Minute),
 
     // Minimum severity that gets exported to OTel Logs
     mcp.WithLogLevel(slog.LevelWarn),

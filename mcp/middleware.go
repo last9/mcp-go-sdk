@@ -60,18 +60,7 @@ func (s *Last9MCPServer) requestMiddleware(next sdkmcp.MethodHandler) sdkmcp.Met
 			return s.handlePromptsGet(ctx, next, req)
 		case opSamplingCreate:
 			return s.handleSamplingCreate(ctx, next, req)
-		case opToolsList:
-			// tools/list signals the end of a query cycle.
-			result, err := s.handleSimpleOp(ctx, next, method, req)
-			clientID := clientIDFromCtx(ctx)
-			if s.sessions.endQuery(clientID) {
-				info, _ := s.sessions.getInfo(clientID)
-				s.logger.InfoContext(ctx, "mcp query ended (tools/list)",
-					"client.name", info.Name,
-					"client.id", clientID,
-				)
-			}
-			return result, err
+
 		}
 
 		// Fallthrough: instrument generically (ping, completion/complete, etc.)
@@ -202,10 +191,6 @@ func (s *Last9MCPServer) handleServerDiscover(ctx context.Context, next sdkmcp.M
 	return next(ctx, opServerDiscover, req)
 }
 
-// handleToolsCall instruments a tools/call operation with full query correlation:
-// the first tool call in a session starts a root query span; subsequent calls
-// become child spans of that same query, enabling trace grouping across an
-// LLM reasoning cycle.
 func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.MethodHandler, req sdkmcp.Request) (sdkmcp.Result, error) {
 	ctr, ok := req.(*sdkmcp.CallToolRequest)
 	if !ok {
@@ -227,32 +212,9 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 		keyMCPClientID.String(clientID),
 	}
 
-	if parentCtx, queryID, exists := s.sessions.latestQuery(clientID); exists {
-		// Continue existing query — make this span a child of the stored query root.
-		ctx = trace.ContextWithSpanContext(ctx, parentCtx)
-		baseSpanAttrs = append(baseSpanAttrs, keyMCPSessionID.String(queryID))
-		s.logger.InfoContext(ctx, "mcp tool call (continued query)",
-			"tool.name", toolName, "query.id", queryID, "client.name", info.Name)
-	} else {
-		// First tool call in a new query — create a root query span, store its
-		// context, then immediately end it so only the tool span is active.
-		queryID := fmt.Sprintf("query_%s_%d", clientID, time.Now().UnixNano())
-		var querySpan trace.Span
-		ctx, querySpan = s.tracer.Start(ctx, "mcp user_query",
-			trace.WithAttributes(
-				keyGenAISystem.String(genAISystem),
-				keyMCPSessionID.String(queryID),
-				keyMCPClientName.String(info.Name),
-				keyMCPClientID.String(clientID),
-				keyMCPServerName.String(s.serverName),
-			),
-		)
-		s.sessions.storeQuery(clientID, queryID, querySpan.SpanContext())
-		querySpan.End()
-
-		baseSpanAttrs = append(baseSpanAttrs, keyMCPSessionID.String(queryID))
-		s.logger.InfoContext(ctx, "mcp tool call (new query)",
-			"tool.name", toolName, "query.id", queryID, "client.name", info.Name)
+	ctx, turnID := requestTurnContext(ctx, req)
+	if turnID != "" {
+		baseSpanAttrs = append(baseSpanAttrs, keyMCPTurnID.String(turnID))
 	}
 
 	ctx, span := s.tracer.Start(ctx, toolSpanName(toolName),

@@ -28,7 +28,7 @@ var (
 	keyMCPClientID      = attribute.Key("mcp.client.id")
 
 	// MCP session
-	keyMCPSessionID = attribute.Key("mcp.session.id")
+	keyMCPTurnID = attribute.Key("mcp.turn.id")
 
 	// MCP tool
 	keyMCPToolName   = attribute.Key("mcp.tool.name")
@@ -57,9 +57,9 @@ const genAISystem = "mcp"
 const (
 	opToolsCall          = "tools/call"
 	opToolsList          = "tools/list"
-	opResourcesRead  = "resources/read"
-	opResourcesList  = "resources/list"
-	opPromptsGet     = "prompts/get"
+	opResourcesRead      = "resources/read"
+	opResourcesList      = "resources/list"
+	opPromptsGet         = "prompts/get"
 	opPromptsList        = "prompts/list"
 	opSamplingCreate     = "sampling/createMessage"
 	opCompletionComplete = "completion/complete"

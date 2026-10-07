@@ -19,9 +19,8 @@ type config struct {
 	instrumentPrompts   bool
 	instrumentSampling  bool
 
-	// Session and query lifecycle timeouts.
+	// Session lifecycle timeout.
 	sessionTimeout time.Duration
-	queryTimeout   time.Duration
 
 	// Minimum severity of the SDK's own log records.
 	logLevel slog.Level
@@ -43,7 +42,6 @@ func defaultConfig() *config {
 		instrumentPrompts:   true,
 		instrumentSampling:  true,
 		sessionTimeout:      30 * time.Minute,
-		queryTimeout:        10 * time.Minute,
 		logLevel:            slog.LevelInfo,
 	}
 }
@@ -96,10 +94,10 @@ func WithSessionTimeout(d time.Duration) Option {
 	return func(c *config) { c.sessionTimeout = d }
 }
 
-// WithQueryTimeout sets how long an inactive query span context is retained.
-// Default: 10 minutes.
-func WithQueryTimeout(d time.Duration) Option {
-	return func(c *config) { c.queryTimeout = d }
+// WithQueryTimeout is retained for source compatibility.
+// Deprecated: turn correlation is per request and does not retain query state.
+func WithQueryTimeout(_ time.Duration) Option {
+	return func(*config) {}
 }
 
 // WithLogLevel sets the minimum severity of the log records the SDK emits,
