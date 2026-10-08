@@ -12,7 +12,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // sessionGaugeMeterProvider hands out a meter whose mcp.active.sessions
@@ -184,17 +183,17 @@ func TestSessionStore_WaitForRemovalsHonorsContextWhileLoggingBlocks(t *testing.
 }
 
 // A log handler that blocks while the stale-session sweep reports an expired
-// query must not leave that session's lock held, or every request touching
+// session must not leave that session's lock held, or every request touching
 // the session (and, through the store lock, Shutdown) stalls behind it.
 func TestSessionStore_CleanupDoesNotLogWhileHoldingSessionLock(t *testing.T) {
 	s := newTestStore(t)
 	s.create(context.Background(), "c1", ClientInfo{Name: "cursor"})
-	s.storeQuery("c1", "q1", trace.SpanContext{})
+	s.create(context.Background(), "c2", ClientInfo{Name: "cursor"})
 	s.mu.RLock()
 	sess := s.sessions["c1"]
 	s.mu.RUnlock()
 	sess.mu.Lock()
-	sess.activeQueries["q1"].lastUsed = time.Now().Add(-2 * s.cfg.queryTimeout)
+	sess.lastActivity = time.Now().Add(-2 * s.cfg.sessionTimeout)
 	sess.mu.Unlock()
 
 	h := blockingHandler{entered: make(chan struct{}), release: make(chan struct{}), once: &sync.Once{}}
@@ -207,7 +206,7 @@ func TestSessionStore_CleanupDoesNotLogWhileHoldingSessionLock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.ensure("c1", ClientInfo{Name: "cursor"})
+		s.ensure("c2", ClientInfo{Name: "cursor"})
 	}()
 	select {
 	case <-done:

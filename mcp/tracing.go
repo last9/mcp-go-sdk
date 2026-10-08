@@ -8,7 +8,6 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -29,19 +28,11 @@ type ClientInfo struct {
 	Capabilities sdkmcp.ClientCapabilities
 }
 
-// storedQuery holds a stored trace span context for an in-flight query.
-type storedQuery struct {
-	spanCtx  trace.SpanContext
-	queryID  string
-	lastUsed time.Time
-}
-
-// clientSession tracks per-client state: identity info and active query spans.
+// clientSession tracks per-client state: identity and activity.
 type clientSession struct {
-	info          ClientInfo
-	activeQueries map[string]*storedQuery
-	lastActivity  time.Time
-	mu            sync.RWMutex
+	info         ClientInfo
+	lastActivity time.Time
+	mu           sync.RWMutex
 
 	// activeAttrs holds the attributes this session was counted under in
 	// mcp.active.sessions, or nil if it was never counted. Keeping them lets
@@ -59,7 +50,7 @@ func (sess *clientSession) markCounted() {
 	close(sess.counted)
 }
 
-// sessionStore manages trace contexts and session metadata for all connected clients.
+// sessionStore manages session metadata for all connected clients.
 type sessionStore struct {
 	sessions map[string]*clientSession
 	mu       sync.RWMutex
@@ -129,10 +120,9 @@ func (s *sessionStore) stop() {
 // their own locks around it without calling into the application.
 func (s *sessionStore) create(ctx context.Context, clientID string, info ClientInfo, activeAttrs ...attribute.KeyValue) *clientSession {
 	sess := &clientSession{
-		info:          info,
-		activeQueries: make(map[string]*storedQuery),
-		lastActivity:  time.Now(),
-		activeAttrs:   activeAttrs,
+		info:         info,
+		lastActivity: time.Now(),
+		activeAttrs:  activeAttrs,
 	}
 	if len(activeAttrs) > 0 {
 		sess.counted = make(chan struct{})
@@ -155,9 +145,8 @@ func (s *sessionStore) ensure(clientID string, info ClientInfo) {
 		return
 	}
 	s.sessions[clientID] = &clientSession{
-		info:          info,
-		activeQueries: make(map[string]*storedQuery),
-		lastActivity:  time.Now(),
+		info:         info,
+		lastActivity: time.Now(),
 	}
 	s.mu.Unlock()
 
@@ -178,83 +167,6 @@ func (s *sessionStore) getInfo(clientID string) (ClientInfo, bool) {
 	return ClientInfo{}, false
 }
 
-func (s *sessionStore) storeQuery(clientID, queryID string, spanCtx trace.SpanContext) {
-	// Single lock acquisition eliminates the TOCTOU window where two concurrent
-	// callers both see !exists and both create a session, with the second write
-	// silently discarding any queries stored by the first.
-	s.mu.Lock()
-	sess, exists := s.sessions[clientID]
-	if !exists {
-		sess = &clientSession{
-			activeQueries: make(map[string]*storedQuery),
-			lastActivity:  time.Now(),
-		}
-		s.sessions[clientID] = sess
-	}
-	s.mu.Unlock()
-
-	sess.mu.Lock()
-	sess.activeQueries[queryID] = &storedQuery{
-		spanCtx:  spanCtx,
-		queryID:  queryID,
-		lastUsed: time.Now(),
-	}
-	sess.lastActivity = time.Now()
-	sess.mu.Unlock()
-}
-
-// latestQuery returns the most recently used active query context for a client.
-func (s *sessionStore) latestQuery(clientID string) (trace.SpanContext, string, bool) {
-	s.mu.RLock()
-	sess, exists := s.sessions[clientID]
-	s.mu.RUnlock()
-	if !exists {
-		return trace.SpanContext{}, "", false
-	}
-
-	// Write lock required: we mutate lastUsed and lastActivity on the found
-	// entry. A read lock would allow concurrent mutations, causing a data race.
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-
-	var latest *storedQuery
-	var latestID string
-	for id, q := range sess.activeQueries {
-		if latest == nil || q.lastUsed.After(latest.lastUsed) {
-			latest = q
-			latestID = id
-		}
-	}
-	if latest != nil {
-		latest.lastUsed = time.Now()
-		sess.lastActivity = time.Now()
-		return latest.spanCtx, latestID, true
-	}
-	return trace.SpanContext{}, "", false
-}
-
-// endQuery marks all active queries for a client as complete and removes them.
-func (s *sessionStore) endQuery(clientID string) bool {
-	s.mu.RLock()
-	sess, exists := s.sessions[clientID]
-	s.mu.RUnlock()
-	if !exists {
-		return false
-	}
-
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-
-	ended := len(sess.activeQueries) > 0
-	for id := range sess.activeQueries {
-		delete(sess.activeQueries, id)
-	}
-	if ended {
-		sess.lastActivity = time.Now()
-	}
-	return ended
-}
-
 // allClientIDs returns all currently tracked client IDs.
 func (s *sessionStore) allClientIDs() []string {
 	s.mu.RLock()
@@ -266,15 +178,12 @@ func (s *sessionStore) allClientIDs() []string {
 	return ids
 }
 
-// forceRemove immediately removes a client session and all its queries.
+// forceRemove immediately removes a client session.
 // It reports whether a session was removed.
 func (s *sessionStore) forceRemove(ctx context.Context, clientID string) bool {
 	s.mu.Lock()
 	sess, ok := s.sessions[clientID]
 	if ok {
-		sess.mu.Lock()
-		sess.activeQueries = make(map[string]*storedQuery)
-		sess.mu.Unlock()
 		delete(s.sessions, clientID)
 		s.trackRemoval(sess)
 	}
@@ -356,7 +265,6 @@ func (s *sessionStore) removalsDoneCond() *sync.Cond {
 func (s *sessionStore) cleanupStale(ctx context.Context) {
 	now := time.Now()
 	sessionCutoff := now.Add(-s.cfg.sessionTimeout)
-	queryCutoff := now.Add(-s.cfg.queryTimeout)
 
 	// Snapshot IDs under a short read lock, then process each session
 	// individually to avoid holding the global write lock for the entire sweep.
@@ -376,24 +284,8 @@ func (s *sessionStore) cleanupStale(ctx context.Context) {
 		}
 
 		sess.mu.Lock()
-		activeCount := 0
-		var ended []string
-		for id, q := range sess.activeQueries {
-			if q.lastUsed.Before(queryCutoff) {
-				delete(sess.activeQueries, id)
-				ended = append(ended, id)
-			} else {
-				activeCount++
-			}
-		}
-		stale := sess.lastActivity.Before(sessionCutoff) && activeCount == 0
+		stale := sess.lastActivity.Before(sessionCutoff)
 		sess.mu.Unlock()
-
-		// Log after releasing the session lock: the handler is application
-		// code and must not be able to stall requests on this session.
-		for _, id := range ended {
-			s.logger.DebugContext(ctx, "mcp stale query ended", "client.id", clientID, "query.id", id)
-		}
 
 		if stale {
 			s.mu.Lock()
