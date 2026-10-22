@@ -29,6 +29,25 @@ func TestClassifyToolResult(t *testing.T) {
 		{"IsError with only non-text content", &sdkmcp.CallToolResult{IsError: true,
 			Content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: "image/png"}}},
 			nil, false, errTypeUser, ""},
+		{"IsError tagged system", &sdkmcp.CallToolResult{IsError: true,
+			Meta:    sdkmcp.Meta{"last9/error-type": "system_error"},
+			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "upstream timeout"}}},
+			nil, false, errTypeSystem, "upstream timeout"},
+		{"IsError tagged user", &sdkmcp.CallToolResult{IsError: true,
+			Meta: sdkmcp.Meta{"last9/error-type": "user_error"}},
+			nil, false, errTypeUser, ""},
+		{"IsError with unknown tag", &sdkmcp.CallToolResult{IsError: true,
+			Meta: sdkmcp.Meta{"last9/error-type": "System_Error"}},
+			nil, false, errTypeUser, ""},
+		{"IsError with non-string tag", &sdkmcp.CallToolResult{IsError: true,
+			Meta: sdkmcp.Meta{"last9/error-type": true}},
+			nil, false, errTypeUser, ""},
+		{"IsError with unrelated meta", &sdkmcp.CallToolResult{IsError: true,
+			Meta: sdkmcp.Meta{"error_type": "system_error"}},
+			nil, false, errTypeUser, ""},
+		{"success tagged system", &sdkmcp.CallToolResult{
+			Meta: sdkmcp.Meta{"last9/error-type": "system_error"}},
+			nil, true, "", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
