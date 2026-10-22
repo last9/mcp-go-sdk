@@ -143,6 +143,9 @@ func TestHandleToolsCall_ErrorType(t *testing.T) {
 	}{
 		{"untagged IsError result", isErrorResult(nil), errTypeUser},
 		{"IsError result tagged system", isErrorResult(sdkmcp.Meta{"last9/error-type": "system_error"}), errTypeSystem},
+		{"SystemErrorResult", func(context.Context, string, sdkmcp.Request) (sdkmcp.Result, error) {
+			return SystemErrorResult("upstream timeout"), nil
+		}, errTypeSystem},
 		{"returned Go error", errHandler, errTypeSystem},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

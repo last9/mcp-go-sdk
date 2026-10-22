@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -45,6 +46,8 @@ func TestClassifyToolResult(t *testing.T) {
 		{"IsError with unrelated meta", &sdkmcp.CallToolResult{IsError: true,
 			Meta: sdkmcp.Meta{"error_type": "system_error"}},
 			nil, false, errTypeUser, ""},
+		{"SystemErrorResult", SystemErrorResult("upstream returned 503"),
+			nil, false, errTypeSystem, "upstream returned 503"},
 		{"success tagged system", &sdkmcp.CallToolResult{
 			Meta: sdkmcp.Meta{"last9/error-type": "system_error"}},
 			nil, true, "", ""},
@@ -57,5 +60,20 @@ func TestClassifyToolResult(t *testing.T) {
 					success, errType, errMsg, tc.wantSuccess, tc.wantType, tc.wantMsg)
 			}
 		})
+	}
+}
+
+// The tag must survive the wire so instrumented clients classify the same way.
+func TestSystemErrorResult_SurvivesJSONRoundTrip(t *testing.T) {
+	data, err := json.Marshal(SystemErrorResult("upstream timeout"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got sdkmcp.CallToolResult
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, errType, _ := classifyToolResult(&got, nil); errType != errTypeSystem {
+		t.Errorf("errType after round trip: got %q, want %q (wire: %s)", errType, errTypeSystem, data)
 	}
 }
