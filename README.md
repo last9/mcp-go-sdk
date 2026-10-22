@@ -86,7 +86,9 @@ Tool calls preserve the remote parent from a valid W3C `traceparent` HTTP header
 
 ### Error classification
 
-A failed `tools/call` records `mcp.error.type` on its span, its `error.occurred` event and `mcp.tool.errors.total`. A handler that returns a Go `error` is a `system_error`. An `isError` result is a `user_error` (the tool ran and rejected the call) unless the handler tags it as a server-side failure:
+A failed `tools/call` records `mcp.error.type` on its span, its `error.occurred` event and `mcp.tool.errors.total`. A Go `error` that reaches the middleware (a protocol or raw-handler failure) is a `system_error`. An `isError` result is a `user_error` (the tool ran and rejected the call) unless the handler tags it as a server-side failure.
+
+Typed handlers registered with `RegisterInstrumentedTool` (or `sdkmcp.AddTool`) are the common case here: the go-sdk converts their returned Go `error` into an untagged `isError` result before the middleware sees it, so `return nil, nil, err` records `user_error`. Return `SystemErrorResult` for server-side failures instead:
 
 ```go
 resp, err := client.Do(httpReq)
