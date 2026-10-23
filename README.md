@@ -84,6 +84,22 @@ When Claude calls three tools in a single reasoning turn, those are three separa
 
 Tool calls preserve the remote parent from a valid W3C `traceparent` HTTP header, falling back to `_meta.traceparent` (with optional `_meta.tracestate`). Their `mcp.turn.id` is the validated trace ID. Without trace context, `_meta["last9/turn-id"]` or `_meta["x-codex-turn-metadata"].turn_id` supplies a correlation attribute; it does not create a shared parent or trace. Calls without either remain independent. Clients must send turn context on each call; session identity and `tools/list` do not define turn boundaries.
 
+### Error classification
+
+A failed `tools/call` records `mcp.error.type` on its span, its `error.occurred` event and `mcp.tool.errors.total`. A Go `error` that reaches the middleware (a protocol or raw-handler failure) is a `system_error`. An `isError` result is a `user_error` (the tool ran and rejected the call) unless the handler tags it as a server-side failure.
+
+Typed handlers registered with `RegisterInstrumentedTool` (or `sdkmcp.AddTool`) are the common case here: the go-sdk converts their returned Go `error` into an untagged `isError` result before the middleware sees it, so `return nil, nil, err` records `user_error`. Return `SystemErrorResult` for server-side failures instead:
+
+```go
+resp, err := client.Do(httpReq)
+if err != nil {
+    // Upstream failed: the model still sees the message, dashboards see system_error.
+    return mcp.SystemErrorResult("search backend unavailable: " + err.Error()), nil, nil
+}
+```
+
+`SystemErrorResult` sets `_meta["last9/error-type"] = "system_error"` (`mcp.MetaKeyErrorType`); set that key yourself on any `isError` result to the same effect. Clients instrumented with this SDK read the same tag.
+
 ### Metrics
 
 | Metric | Type | Description |

@@ -262,11 +262,30 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	return result, err
 }
 
+// MetaKeyErrorType is the CallToolResult _meta key a tool handler sets to
+// "system_error" to report an IsError result as a server-side failure
+// (upstream timeout, HTTP 5xx, network error) rather than a caller mistake.
+// Any other value, or none, leaves the result classified as "user_error".
+const MetaKeyErrorType = "last9/error-type"
+
+// SystemErrorResult returns an IsError CallToolResult carrying msg as text
+// and tagged so its span, error.occurred event and mcp.tool.errors.total
+// record mcp.error.type=system_error. Use it for failures the caller could
+// not have avoided; return a plain IsError result for bad input.
+func SystemErrorResult(msg string) *sdkmcp.CallToolResult {
+	return &sdkmcp.CallToolResult{
+		IsError: true,
+		Meta:    sdkmcp.Meta{MetaKeyErrorType: errTypeSystem},
+		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: msg}},
+	}
+}
+
 // classifyToolResult decides whether a tools/call succeeded. A call fails if
 // it returned an error (a system error) or a CallToolResult with IsError set
 // (a user error, meaning the tool ran and reported a failure, whatever content
-// it returned). errMsg is the error text, or the first text block of an
-// IsError result, or empty if it has none.
+// it returned, unless its _meta tags it as a system error). errMsg is the
+// error text, or the first text block of an IsError result, or empty if it
+// has none.
 func classifyToolResult(result sdkmcp.Result, err error) (success bool, errType, errMsg string) {
 	if err != nil {
 		return false, errTypeSystem, err.Error()
@@ -275,12 +294,16 @@ func classifyToolResult(result sdkmcp.Result, err error) (success bool, errType,
 	if !ok || cr == nil || !cr.IsError {
 		return true, "", ""
 	}
+	errType = errTypeUser
+	if cr.Meta[MetaKeyErrorType] == errTypeSystem {
+		errType = errTypeSystem
+	}
 	for _, c := range cr.Content {
 		if txt, ok := c.(*sdkmcp.TextContent); ok {
-			return false, errTypeUser, txt.Text
+			return false, errType, txt.Text
 		}
 	}
-	return false, errTypeUser, ""
+	return false, errType, ""
 }
 
 // handleResourcesRead instruments a resources/read operation.

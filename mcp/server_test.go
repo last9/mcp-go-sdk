@@ -126,6 +126,53 @@ func TestHandleToolsCall_OperationStatusError(t *testing.T) {
 	t.Fatal("tool span not found")
 }
 
+func TestHandleToolsCall_ErrorType(t *testing.T) {
+	isErrorResult := func(meta sdkmcp.Meta) sdkmcp.MethodHandler {
+		return func(context.Context, string, sdkmcp.Request) (sdkmcp.Result, error) {
+			return &sdkmcp.CallToolResult{
+				IsError: true,
+				Meta:    meta,
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "query failed"}},
+			}, nil
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		handler sdkmcp.MethodHandler
+		want    string
+	}{
+		{"untagged IsError result", isErrorResult(nil), errTypeUser},
+		{"IsError result tagged system", isErrorResult(sdkmcp.Meta{"last9/error-type": "system_error"}), errTypeSystem},
+		{"SystemErrorResult", func(context.Context, string, sdkmcp.Request) (sdkmcp.Result, error) {
+			return SystemErrorResult("upstream timeout"), nil
+		}, errTypeSystem},
+		{"returned Go error", errHandler, errTypeSystem},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, exp := testInfra(t)
+			ctx := withTestClient(context.Background(), s, "c1", "test-client")
+
+			req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "query"}}
+			_, _ = s.handleToolsCall(ctx, tc.handler, req)
+
+			spans := exp.GetSpans()
+			if len(spans) != 1 {
+				t.Fatalf("expected 1 span, got %v", spanNames(spans))
+			}
+			sp := spans[0]
+			requireAttr(t, sp.Attributes, keyMCPOperationStatus, statusError)
+			requireAttr(t, sp.Attributes, keyMCPErrorType, tc.want)
+			for _, ev := range sp.Events {
+				if ev.Name == "error.occurred" {
+					requireAttr(t, ev.Attributes, keyMCPErrorType, tc.want)
+					return
+				}
+			}
+			t.Fatal("error.occurred event not found")
+		})
+	}
+}
+
 // ── resources/read ────────────────────────────────────────────────────────────
 
 func TestHandleResourcesRead_SpanAttributes(t *testing.T) {
