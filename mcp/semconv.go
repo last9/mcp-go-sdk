@@ -70,14 +70,18 @@ const (
 
 // Error type values for mcp.error.type dimension.
 const (
-	errTypeUser   = "user_error"
-	errTypeSystem = "system_error"
+	errTypeUser             = "user_error"
+	errTypeSystem           = "system_error"
+	errTypeCancelled        = "cancelled"
+	errTypeDeadlineExceeded = "deadline_exceeded"
 )
 
 // Status values for mcp.operation.status dimension.
 const (
-	statusSuccess = "success"
-	statusError   = "error"
+	statusSuccess          = "success"
+	statusError            = "error"
+	statusCancelled        = "cancelled"
+	statusDeadlineExceeded = "deadline_exceeded"
 )
 
 // spanName returns the canonical OTel span name "mcp {operation}".

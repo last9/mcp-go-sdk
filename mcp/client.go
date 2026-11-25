@@ -206,36 +206,42 @@ func (c *Last9MCPClient) handleClientToolCall(ctx context.Context, next sdkmcp.M
 
 	start := time.Now()
 	mAttrs := toolAttrs(toolName, transport, c.clientName)
-	c.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(mAttrs...))
-
 	result, err := next(ctx, opToolsCall, req)
 	duration := time.Since(start)
 
 	c.inst.toolDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
 	c.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
-	if success, errType, errMsg := classifyToolResult(result, err); success {
+	if success, opStatus, errType, errMsg := classifyToolResult(result, err); success {
+		callAttrs := append(mAttrs, keyMCPOperationStatus.String(opStatus))
+		c.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(callAttrs...))
 		span.SetStatus(codes.Ok, "")
-		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
+		span.SetAttributes(keyMCPOperationStatus.String(opStatus))
 		span.AddEvent("result.received", trace.WithAttributes(
-			keyMCPOperationStatus.String(statusSuccess),
+			keyMCPOperationStatus.String(opStatus),
 		))
 	} else {
+		outcomeAttrs := []attribute.KeyValue{
+			keyMCPOperationStatus.String(opStatus),
+			keyMCPErrorType.String(errType),
+		}
+		c.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(append(mAttrs, outcomeAttrs...)...))
 		if err != nil {
 			span.RecordError(err)
 		}
 		span.SetStatus(codes.Error, errMsg)
 		span.SetAttributes(
-			keyMCPOperationStatus.String(statusError),
+			keyMCPOperationStatus.String(opStatus),
 			keyMCPErrorType.String(errType),
 			keyMCPErrorMessage.String(errMsg),
 		)
 		span.AddEvent("error.occurred", trace.WithAttributes(
+			keyMCPOperationStatus.String(opStatus),
 			keyMCPErrorType.String(errType),
 			keyMCPErrorMessage.String(errMsg),
 		))
 		c.inst.toolErrors.Add(ctx, 1, metric.WithAttributes(
-			append(mAttrs, keyMCPErrorType.String(errType))...,
+			append(mAttrs, outcomeAttrs...)...,
 		))
 	}
 
