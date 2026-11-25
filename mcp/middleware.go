@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -226,36 +227,42 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 
 	start := time.Now()
 	mAttrs := toolAttrs(toolName, s.transport(), info.Name)
-	s.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(mAttrs...))
-
 	result, err := next(ctx, opToolsCall, req)
 	duration := time.Since(start)
 
 	s.inst.toolDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs...))
 	s.inst.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(mAttrs[:4]...))
 
-	if success, errType, errMsg := classifyToolResult(result, err); success {
+	if success, opStatus, errType, errMsg := classifyToolResult(result, err); success {
+		callAttrs := append(mAttrs, keyMCPOperationStatus.String(opStatus))
+		s.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(callAttrs...))
 		span.SetStatus(codes.Ok, "")
-		span.SetAttributes(keyMCPOperationStatus.String(statusSuccess))
+		span.SetAttributes(keyMCPOperationStatus.String(opStatus))
 		span.AddEvent("result.received", trace.WithAttributes(
-			keyMCPOperationStatus.String(statusSuccess),
+			keyMCPOperationStatus.String(opStatus),
 		))
 	} else {
+		outcomeAttrs := []attribute.KeyValue{
+			keyMCPOperationStatus.String(opStatus),
+			keyMCPErrorType.String(errType),
+		}
+		s.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(append(mAttrs, outcomeAttrs...)...))
 		if err != nil {
 			span.RecordError(err)
 		}
 		span.SetStatus(codes.Error, errMsg)
 		span.SetAttributes(
-			keyMCPOperationStatus.String(statusError),
+			keyMCPOperationStatus.String(opStatus),
 			keyMCPErrorType.String(errType),
 			keyMCPErrorMessage.String(errMsg),
 		)
 		span.AddEvent("error.occurred", trace.WithAttributes(
+			keyMCPOperationStatus.String(opStatus),
 			keyMCPErrorType.String(errType),
 			keyMCPErrorMessage.String(errMsg),
 		))
 		s.inst.toolErrors.Add(ctx, 1, metric.WithAttributes(
-			append(mAttrs, keyMCPErrorType.String(errType))...,
+			append(mAttrs, outcomeAttrs...)...,
 		))
 	}
 
@@ -280,19 +287,25 @@ func SystemErrorResult(msg string) *sdkmcp.CallToolResult {
 	}
 }
 
-// classifyToolResult decides whether a tools/call succeeded. A call fails if
-// it returned an error (a system error) or a CallToolResult with IsError set
-// (a user error, meaning the tool ran and reported a failure, whatever content
-// it returned, unless its _meta tags it as a system error). errMsg is the
-// error text, or the first text block of an IsError result, or empty if it
-// has none.
-func classifyToolResult(result sdkmcp.Result, err error) (success bool, errType, errMsg string) {
+// classifyToolResult decides whether a tools/call succeeded and returns its
+// telemetry status. Cancellation and deadline errors are caller-ended outcomes;
+// other returned errors are system errors. A CallToolResult with IsError set is
+// a user error unless its _meta tags it as a system error. errMsg is the error
+// text, or the first text block of an IsError result, or empty if it has none.
+func classifyToolResult(result sdkmcp.Result, err error) (success bool, opStatus, errType, errMsg string) {
 	if err != nil {
-		return false, errTypeSystem, err.Error()
+		switch {
+		case errors.Is(err, context.Canceled):
+			return false, statusCancelled, errTypeCancelled, err.Error()
+		case errors.Is(err, context.DeadlineExceeded):
+			return false, statusDeadlineExceeded, errTypeDeadlineExceeded, err.Error()
+		default:
+			return false, statusError, errTypeSystem, err.Error()
+		}
 	}
 	cr, ok := result.(*sdkmcp.CallToolResult)
 	if !ok || cr == nil || !cr.IsError {
-		return true, "", ""
+		return true, statusSuccess, "", ""
 	}
 	errType = errTypeUser
 	if cr.Meta[MetaKeyErrorType] == errTypeSystem {
@@ -300,10 +313,10 @@ func classifyToolResult(result sdkmcp.Result, err error) (success bool, errType,
 	}
 	for _, c := range cr.Content {
 		if txt, ok := c.(*sdkmcp.TextContent); ok {
-			return false, errType, txt.Text
+			return false, statusError, errType, txt.Text
 		}
 	}
-	return false, errType, ""
+	return false, statusError, errType, ""
 }
 
 // handleResourcesRead instruments a resources/read operation.

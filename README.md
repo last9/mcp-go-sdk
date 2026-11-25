@@ -73,7 +73,7 @@ gen_ai.tool.name         = search
 mcp.tool.name            = search
 mcp.server.transport     = stdio
 mcp.client.name          = claude-desktop
-mcp.operation.status     = success | error
+mcp.operation.status     = success | error | cancelled | deadline_exceeded
 ```
 
 These aren't made-up attribute names. They're the emerging standard for AI observability, which means your traces compose with whatever else you're already shipping to your backend.
@@ -86,7 +86,7 @@ Tool calls preserve the remote parent from a valid W3C `traceparent` HTTP header
 
 ### Error classification
 
-A failed `tools/call` records `mcp.error.type` on its span, its `error.occurred` event and `mcp.tool.errors.total`. A Go `error` that reaches the middleware (a protocol or raw-handler failure) is a `system_error`. An `isError` result is a `user_error` (the tool ran and rejected the call) unless the handler tags it as a server-side failure.
+A failed `tools/call` records `mcp.operation.status` and `mcp.error.type` on its span, its `error.occurred` event, `mcp.tool.calls.total`, and `mcp.tool.errors.total`. Errors matching `context.Canceled` record `cancelled` for both attributes; errors matching `context.DeadlineExceeded` record `deadline_exceeded`, including wrapped errors. Other Go errors that reach the middleware (a protocol or raw-handler failure) remain `mcp.operation.status=error` and `mcp.error.type=system_error`. An `isError` result remains an `error` with type `user_error` (the tool ran and rejected the call) unless the handler tags it as a server-side failure.
 
 Typed handlers registered with `RegisterInstrumentedTool` (or `sdkmcp.AddTool`) are the common case here: the go-sdk converts their returned Go `error` into an untagged `isError` result before the middleware sees it, so `return nil, nil, err` records `user_error`. Return `SystemErrorResult` for server-side failures instead:
 

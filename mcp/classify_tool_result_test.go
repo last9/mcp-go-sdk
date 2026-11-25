@@ -16,54 +16,55 @@ func TestClassifyToolResult(t *testing.T) {
 		result      sdkmcp.Result
 		err         error
 		wantSuccess bool
+		wantStatus  string
 		wantType    string
 		wantMsg     string
 	}{
-		{"success", &sdkmcp.CallToolResult{}, nil, true, "", ""},
-		{"returned error", nil, errors.New("connection reset"), false, errTypeSystem, "connection reset"},
-		{"cancelled", nil, context.Canceled, false, "cancelled", context.Canceled.Error()},
-		{"wrapped cancellation", nil, fmt.Errorf("tool stopped: %w", context.Canceled), false, "cancelled", "tool stopped: context canceled"},
-		{"deadline exceeded", nil, context.DeadlineExceeded, false, "deadline_exceeded", context.DeadlineExceeded.Error()},
-		{"wrapped deadline", nil, fmt.Errorf("tool timed out: %w", context.DeadlineExceeded), false, "deadline_exceeded", "tool timed out: context deadline exceeded"},
+		{"success", &sdkmcp.CallToolResult{}, nil, true, statusSuccess, "", ""},
+		{"returned error", nil, errors.New("connection reset"), false, statusError, errTypeSystem, "connection reset"},
+		{"cancelled", nil, context.Canceled, false, statusCancelled, errTypeCancelled, context.Canceled.Error()},
+		{"wrapped cancellation", nil, fmt.Errorf("tool stopped: %w", context.Canceled), false, statusCancelled, errTypeCancelled, "tool stopped: context canceled"},
+		{"deadline exceeded", nil, context.DeadlineExceeded, false, statusDeadlineExceeded, errTypeDeadlineExceeded, context.DeadlineExceeded.Error()},
+		{"wrapped deadline", nil, fmt.Errorf("tool timed out: %w", context.DeadlineExceeded), false, statusDeadlineExceeded, errTypeDeadlineExceeded, "tool timed out: context deadline exceeded"},
 		{"IsError with text", &sdkmcp.CallToolResult{IsError: true,
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "city not found"}}},
-			nil, false, errTypeUser, "city not found"},
+			nil, false, statusError, errTypeUser, "city not found"},
 		{"IsError with no content", &sdkmcp.CallToolResult{IsError: true},
-			nil, false, errTypeUser, ""},
+			nil, false, statusError, errTypeUser, ""},
 		{"IsError with text after non-text content", &sdkmcp.CallToolResult{IsError: true,
 			Content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: "image/png"}, &sdkmcp.TextContent{Text: "render failed"}}},
-			nil, false, errTypeUser, "render failed"},
+			nil, false, statusError, errTypeUser, "render failed"},
 		{"IsError with only non-text content", &sdkmcp.CallToolResult{IsError: true,
 			Content: []sdkmcp.Content{&sdkmcp.ImageContent{MIMEType: "image/png"}}},
-			nil, false, errTypeUser, ""},
+			nil, false, statusError, errTypeUser, ""},
 		{"IsError tagged system", &sdkmcp.CallToolResult{IsError: true,
 			Meta:    sdkmcp.Meta{"last9/error-type": "system_error"},
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "upstream timeout"}}},
-			nil, false, errTypeSystem, "upstream timeout"},
+			nil, false, statusError, errTypeSystem, "upstream timeout"},
 		{"IsError tagged user", &sdkmcp.CallToolResult{IsError: true,
 			Meta: sdkmcp.Meta{"last9/error-type": "user_error"}},
-			nil, false, errTypeUser, ""},
+			nil, false, statusError, errTypeUser, ""},
 		{"IsError with unknown tag", &sdkmcp.CallToolResult{IsError: true,
 			Meta: sdkmcp.Meta{"last9/error-type": "System_Error"}},
-			nil, false, errTypeUser, ""},
+			nil, false, statusError, errTypeUser, ""},
 		{"IsError with non-string tag", &sdkmcp.CallToolResult{IsError: true,
 			Meta: sdkmcp.Meta{"last9/error-type": true}},
-			nil, false, errTypeUser, ""},
+			nil, false, statusError, errTypeUser, ""},
 		{"IsError with unrelated meta", &sdkmcp.CallToolResult{IsError: true,
 			Meta: sdkmcp.Meta{"error_type": "system_error"}},
-			nil, false, errTypeUser, ""},
+			nil, false, statusError, errTypeUser, ""},
 		{"SystemErrorResult", SystemErrorResult("upstream returned 503"),
-			nil, false, errTypeSystem, "upstream returned 503"},
+			nil, false, statusError, errTypeSystem, "upstream returned 503"},
 		{"success tagged system", &sdkmcp.CallToolResult{
 			Meta: sdkmcp.Meta{"last9/error-type": "system_error"}},
-			nil, true, "", ""},
+			nil, true, statusSuccess, "", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			success, errType, errMsg := classifyToolResult(tc.result, tc.err)
-			if success != tc.wantSuccess || errType != tc.wantType || errMsg != tc.wantMsg {
-				t.Errorf("got (%v, %q, %q), want (%v, %q, %q)",
-					success, errType, errMsg, tc.wantSuccess, tc.wantType, tc.wantMsg)
+			success, status, errType, errMsg := classifyToolResult(tc.result, tc.err)
+			if success != tc.wantSuccess || status != tc.wantStatus || errType != tc.wantType || errMsg != tc.wantMsg {
+				t.Errorf("got (%v, %q, %q, %q), want (%v, %q, %q, %q)",
+					success, status, errType, errMsg, tc.wantSuccess, tc.wantStatus, tc.wantType, tc.wantMsg)
 			}
 		})
 	}
@@ -79,7 +80,7 @@ func TestSystemErrorResult_SurvivesJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, errType, _ := classifyToolResult(&got, nil); errType != errTypeSystem {
+	if _, _, errType, _ := classifyToolResult(&got, nil); errType != errTypeSystem {
 		t.Errorf("errType after round trip: got %q, want %q (wire: %s)", errType, errTypeSystem, data)
 	}
 }
