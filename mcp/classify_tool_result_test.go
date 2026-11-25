@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -19,6 +21,10 @@ func TestClassifyToolResult(t *testing.T) {
 	}{
 		{"success", &sdkmcp.CallToolResult{}, nil, true, "", ""},
 		{"returned error", nil, errors.New("connection reset"), false, errTypeSystem, "connection reset"},
+		{"cancelled", nil, context.Canceled, false, "cancelled", context.Canceled.Error()},
+		{"wrapped cancellation", nil, fmt.Errorf("tool stopped: %w", context.Canceled), false, "cancelled", "tool stopped: context canceled"},
+		{"deadline exceeded", nil, context.DeadlineExceeded, false, "deadline_exceeded", context.DeadlineExceeded.Error()},
+		{"wrapped deadline", nil, fmt.Errorf("tool timed out: %w", context.DeadlineExceeded), false, "deadline_exceeded", "tool timed out: context deadline exceeded"},
 		{"IsError with text", &sdkmcp.CallToolResult{IsError: true,
 			Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "city not found"}}},
 			nil, false, errTypeUser, "city not found"},
