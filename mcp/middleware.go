@@ -201,6 +201,12 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	toolName := ctr.Params.Name
 	clientID := clientIDFromCtx(ctx)
 	info := clientInfoFromCtx(ctx, s)
+	spanClientName := info.Name
+	if spanClientName == "unknown_client" {
+		if userAgent := requestHeader(req, "User-Agent"); userAgent != "" {
+			spanClientName = userAgent
+		}
+	}
 
 	baseSpanAttrs := []attribute.KeyValue{
 		keyGenAISystem.String(genAISystem),
@@ -209,7 +215,7 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 		keyMCPServerName.String(s.serverName),
 		keyMCPServerTransport.String(s.transport()),
 		keyMCPToolName.String(toolName),
-		keyMCPClientName.String(info.Name),
+		keyMCPClientName.String(spanClientName),
 		keyMCPClientID.String(clientID),
 	}
 	baseSpanAttrs = append(baseSpanAttrs, callerIdentityAttrs(ctr)...)
@@ -579,12 +585,6 @@ func (s *Last9MCPServer) clientInfoFromRequest(req sdkmcp.Request) ClientInfo {
 			}
 		}
 	}
-	if info.Name == "unknown_client" {
-		if userAgent := requestHeader(req, "User-Agent"); userAgent != "" {
-			info.Name = userAgent
-		}
-	}
-
 	return info
 }
 
