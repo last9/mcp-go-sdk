@@ -80,11 +80,16 @@ func TestHandleToolsCall_CallerEndedOutcomes(t *testing.T) {
 			}
 			requireAttr(t, spans[0].Attributes, keyMCPOperationStatus, tc.wantStatus)
 			requireAttr(t, spans[0].Attributes, keyMCPErrorType, tc.wantType)
+			foundErrorEvent := false
 			for _, event := range spans[0].Events {
 				if event.Name == "error.occurred" {
+					foundErrorEvent = true
 					requireAttr(t, event.Attributes, keyMCPOperationStatus, tc.wantStatus)
 					requireAttr(t, event.Attributes, keyMCPErrorType, tc.wantType)
 				}
+			}
+			if !foundErrorEvent {
+				t.Fatal("error.occurred event not found")
 			}
 
 			for _, metricName := range []string{"mcp.tool.calls.total", "mcp.tool.errors.total"} {
