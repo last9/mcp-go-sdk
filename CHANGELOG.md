@@ -2,14 +2,11 @@
 
 ## [Unreleased]
 
-### Added
-
-- Streamable HTTP tool-call spans now record forwarded caller identity as `user_agent.original`, `mcp.source`, `user.id`, and `token.kind`, with User-Agent as a fallback for missing MCP client names (#68).
-
 ## [v0.1.7] - 2026-11-27
 
 ### Added
 
+- Streamable HTTP tool-call spans now record forwarded caller identity as `user_agent.original`, `mcp.source`, `user.id`, and `token.kind`, with User-Agent as a fallback for missing MCP client names (#68).
 - Tools can report an `isError` result as `mcp.error.type=system_error` with `SystemErrorResult` or `_meta["last9/error-type"] = "system_error"`; untagged `isError` results stay `user_error` (#59).
 
 ### Fixed
