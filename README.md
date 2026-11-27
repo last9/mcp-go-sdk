@@ -76,6 +76,11 @@ mcp.client.name          = claude-desktop
 mcp.operation.status     = success | error | cancelled | deadline_exceeded
 ```
 
+For Streamable HTTP tool calls, forwarded caller identity headers add
+`user_agent.original`, `mcp.source`, `user.email`, and `token.kind` when set.
+If MCP client metadata has no name, `User-Agent` also supplies
+`mcp.client.name`; explicit MCP client metadata always takes precedence.
+
 These aren't made-up attribute names. They're the emerging standard for AI observability, which means your traces compose with whatever else you're already shipping to your backend.
 
 ### Query correlation

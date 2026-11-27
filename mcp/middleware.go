@@ -212,6 +212,7 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 		keyMCPClientName.String(info.Name),
 		keyMCPClientID.String(clientID),
 	}
+	baseSpanAttrs = append(baseSpanAttrs, callerIdentityAttrs(ctr)...)
 
 	ctx, turnID := requestTurnContext(ctx, req)
 	if turnID != "" {
@@ -578,8 +579,42 @@ func (s *Last9MCPServer) clientInfoFromRequest(req sdkmcp.Request) ClientInfo {
 			}
 		}
 	}
+	if info.Name == "unknown_client" {
+		if userAgent := requestHeader(req, "User-Agent"); userAgent != "" {
+			info.Name = userAgent
+		}
+	}
 
 	return info
+}
+
+// callerIdentityAttrs converts forwarded caller identity headers into span
+// attributes. Empty headers are omitted so absence is distinguishable from an
+// explicitly supplied value.
+func callerIdentityAttrs(req sdkmcp.Request) []attribute.KeyValue {
+	headers := []struct {
+		name string
+		key  attribute.Key
+	}{
+		{name: "User-Agent", key: keyUserAgentOriginal},
+		{name: "X-Last9-Source", key: keyMCPSource},
+		{name: "X-Last9-User", key: keyUserEmail},
+		{name: "X-Last9-Token-Kind", key: keyTokenKind},
+	}
+	attrs := make([]attribute.KeyValue, 0, len(headers))
+	for _, header := range headers {
+		if value := requestHeader(req, header.name); value != "" {
+			attrs = append(attrs, header.key.String(value))
+		}
+	}
+	return attrs
+}
+
+func requestHeader(req sdkmcp.Request, name string) string {
+	if req == nil || req.GetExtra() == nil {
+		return ""
+	}
+	return req.GetExtra().Header.Get(name)
 }
 
 // extractClientInfo parses client identity for the legacy initialize handshake.
