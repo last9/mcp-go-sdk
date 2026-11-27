@@ -201,6 +201,7 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	toolName := ctr.Params.Name
 	clientID := clientIDFromCtx(ctx)
 	info := clientInfoFromCtx(ctx, s)
+	clientName, callerAttrs := toolCallerAttributes(req, info.Name)
 
 	baseSpanAttrs := []attribute.KeyValue{
 		keyGenAISystem.String(genAISystem),
@@ -209,9 +210,10 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 		keyMCPServerName.String(s.serverName),
 		keyMCPServerTransport.String(s.transport()),
 		keyMCPToolName.String(toolName),
-		keyMCPClientName.String(info.Name),
+		keyMCPClientName.String(clientName),
 		keyMCPClientID.String(clientID),
 	}
+	baseSpanAttrs = append(baseSpanAttrs, callerAttrs...)
 
 	ctx, turnID := requestTurnContext(ctx, req)
 	if turnID != "" {
@@ -267,6 +269,37 @@ func (s *Last9MCPServer) handleToolsCall(ctx context.Context, next sdkmcp.Method
 	}
 
 	return result, err
+}
+
+// toolCallerAttributes maps identity forwarded by the HTTP host to tool span
+// attributes. The User-Agent fallback stays local to telemetry so anonymous
+// callers retain their independently generated session identities.
+func toolCallerAttributes(req sdkmcp.Request, clientName string) (string, []attribute.KeyValue) {
+	extra := req.GetExtra()
+	if extra == nil || extra.Header == nil {
+		return clientName, nil
+	}
+
+	userAgent := extra.Header.Get("User-Agent")
+	if (clientName == "" || clientName == "unknown_client") && userAgent != "" {
+		clientName = userAgent
+	}
+
+	attrs := make([]attribute.KeyValue, 0, 4)
+	for _, forwarded := range []struct {
+		header string
+		key    attribute.Key
+	}{
+		{header: "User-Agent", key: keyUserAgentOriginal},
+		{header: "X-Last9-Source", key: keyMCPSource},
+		{header: "X-Last9-User", key: keyUserID},
+		{header: "X-Last9-Token-Kind", key: keyTokenKind},
+	} {
+		if value := extra.Header.Get(forwarded.header); value != "" {
+			attrs = append(attrs, forwarded.key.String(value))
+		}
+	}
+	return clientName, attrs
 }
 
 // MetaKeyErrorType is the CallToolResult _meta key a tool handler sets to

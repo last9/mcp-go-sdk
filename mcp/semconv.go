@@ -23,9 +23,13 @@ var (
 	keyMCPServerTransport = attribute.Key("mcp.server.transport")
 
 	// MCP client identity
-	keyMCPClientName    = attribute.Key("mcp.client.name")
-	keyMCPClientVersion = attribute.Key("mcp.client.version")
-	keyMCPClientID      = attribute.Key("mcp.client.id")
+	keyMCPClientName     = attribute.Key("mcp.client.name")
+	keyMCPClientVersion  = attribute.Key("mcp.client.version")
+	keyMCPClientID       = attribute.Key("mcp.client.id")
+	keyUserAgentOriginal = attribute.Key("user_agent.original")
+	keyMCPSource         = attribute.Key("mcp.source")
+	keyUserID            = attribute.Key("user.id")
+	keyTokenKind         = attribute.Key("token.kind")
 
 	// MCP session
 	keyMCPTurnID = attribute.Key("mcp.turn.id")
