@@ -64,6 +64,37 @@ func TestForwardedCallerIdentityDoesNotOverrideExplicitClientName(t *testing.T) 
 	requireAttr(t, span.Attributes, keyMCPClientName, "cursor")
 }
 
+func TestForwardedUserAgentDoesNotIdentifyAnonymousStatelessClients(t *testing.T) {
+	s, _ := testInfra(t)
+	s.setTransport("streamable")
+
+	var clientIDs []string
+	next := func(ctx context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Result, error) {
+		clientIDs = append(clientIDs, clientIDFromCtx(ctx))
+		return &sdkmcp.CallToolResult{}, nil
+	}
+	handler := s.requestMiddleware(next)
+
+	for _, toolName := range []string{"first", "second"} {
+		req := &sdkmcp.CallToolRequest{
+			Params: &sdkmcp.CallToolParamsRaw{Name: toolName},
+			Extra:  &sdkmcp.RequestExtra{Header: http.Header{"User-Agent": []string{"shared-client/1.0"}}},
+		}
+		if _, err := handler(context.Background(), opToolsCall, req); err != nil {
+			t.Fatalf("%s tools/call: %v", toolName, err)
+		}
+	}
+
+	if clientIDs[0] == clientIDs[1] {
+		t.Fatalf("anonymous callers share client ID %q", clientIDs[0])
+	}
+	for _, clientID := range clientIDs {
+		if _, ok := s.sessions.getInfo(clientID); ok {
+			t.Fatalf("anonymous session %q was retained", clientID)
+		}
+	}
+}
+
 func TestForwardedCallerIdentityAbsentHeadersAndStdio(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
