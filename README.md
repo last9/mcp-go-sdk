@@ -71,17 +71,22 @@ gen_ai.system            = mcp
 gen_ai.operation.name    = tools/call
 gen_ai.tool.name         = search
 mcp.tool.name            = search
-mcp.server.transport     = stdio
+mcp.server.transport     = streamable
 mcp.client.name          = claude-desktop
+mcp.source               = chatgpt
+user.id                  = user-123
+token.kind               = oauth
+user_agent.original      = last9-mcp-server/1.2.3
 mcp.operation.status     = success | error | cancelled | deadline_exceeded
 ```
 
-For Streamable HTTP tool calls, forwarded caller identity headers add
-`user_agent.original`, `mcp.source`, `user.email`, and `token.kind` when set.
-If MCP client metadata has no name, `User-Agent` also supplies
-`mcp.client.name`; explicit MCP client metadata always takes precedence.
-
 These aren't made-up attribute names. They're the emerging standard for AI observability, which means your traces compose with whatever else you're already shipping to your backend.
+
+For Streamable HTTP tool calls, the SDK records non-empty `User-Agent`,
+`X-Last9-Source`, `X-Last9-User`, and `X-Last9-Token-Kind` headers as the
+attributes shown above. `User-Agent` also supplies `mcp.client.name` when MCP
+client info has no name; an explicit MCP client name always takes precedence.
+The SDK never records a user email header.
 
 ### Query correlation
 

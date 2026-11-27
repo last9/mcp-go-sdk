@@ -28,7 +28,7 @@ var (
 	keyMCPClientID       = attribute.Key("mcp.client.id")
 	keyUserAgentOriginal = attribute.Key("user_agent.original")
 	keyMCPSource         = attribute.Key("mcp.source")
-	keyUserEmail         = attribute.Key("user.email")
+	keyUserID            = attribute.Key("user.id")
 	keyTokenKind         = attribute.Key("token.kind")
 
 	// MCP session

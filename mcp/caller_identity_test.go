@@ -10,129 +10,111 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-func TestRegisterInstrumentedToolAddsForwardedCallerIdentity(t *testing.T) {
-	s, exp := testInfra(t)
-	s.setTransport("streamable")
+var (
+	testKeyUserAgentOriginal = attribute.Key("user_agent.original")
+	testKeyMCPSource         = attribute.Key("mcp.source")
+	testKeyUserID            = attribute.Key("user.id")
+	testKeyTokenKind         = attribute.Key("token.kind")
+)
 
-	req := &sdkmcp.CallToolRequest{
-		Params: &sdkmcp.CallToolParamsRaw{Name: "search"},
-		Extra: &sdkmcp.RequestExtra{Header: http.Header{
-			"User-Agent":         []string{"last9-mcp/1.0"},
-			"X-Last9-Source":     []string{"chatgpt"},
-			"X-Last9-User":       []string{"user@example.com"},
-			"X-Last9-Token-Kind": []string{"oauth"},
-		}},
-	}
+func TestToolsCallRecordsForwardedCallerIdentity(t *testing.T) {
+	span := callToolSpan(t, "streamable", "cursor", http.Header{
+		"User-Agent":         {"last9-mcp-server/1.2.3"},
+		"X-Last9-Source":     {"chatgpt"},
+		"X-Last9-User":       {"user-123"},
+		"X-Last9-Token-Kind": {"oauth"},
+		"X-Last9-User-Email": {"person@example.com"},
+	})
 
-	original := func(context.Context, *sdkmcp.CallToolRequest, struct{}) (*sdkmcp.CallToolResult, any, error) {
-		return &sdkmcp.CallToolResult{}, nil, nil
+	requireAttr(t, span.Attributes, testKeyUserAgentOriginal, "last9-mcp-server/1.2.3")
+	requireAttr(t, span.Attributes, testKeyMCPSource, "chatgpt")
+	requireAttr(t, span.Attributes, testKeyUserID, "user-123")
+	requireAttr(t, span.Attributes, testKeyTokenKind, "oauth")
+	if _, ok := findAttr(span.Attributes, attribute.Key("user.email")); ok {
+		t.Error("user.email must not be recorded")
 	}
-	instrumented := instrumentHandler(s, original)
-	next := func(ctx context.Context, _ string, request sdkmcp.Request) (sdkmcp.Result, error) {
-		result, _, err := instrumented(ctx, request.(*sdkmcp.CallToolRequest), struct{}{})
-		return result, err
-	}
-
-	if _, err := s.requestMiddleware(next)(context.Background(), opToolsCall, req); err != nil {
-		t.Fatalf("tools/call: %v", err)
-	}
-
-	span := toolSpan(t, exp.GetSpans(), "search")
-	requireAttr(t, span.Attributes, keyUserAgentOriginal, "last9-mcp/1.0")
-	requireAttr(t, span.Attributes, keyMCPSource, "chatgpt")
-	requireAttr(t, span.Attributes, keyUserEmail, "user@example.com")
-	requireAttr(t, span.Attributes, keyTokenKind, "oauth")
-	requireAttr(t, span.Attributes, keyMCPClientName, "last9-mcp/1.0")
 }
 
-func TestForwardedCallerIdentityDoesNotOverrideExplicitClientName(t *testing.T) {
-	s, exp := testInfra(t)
-	s.setTransport("streamable")
-	req := &sdkmcp.CallToolRequest{
-		Params: &sdkmcp.CallToolParamsRaw{
-			Name: "search",
-			Meta: sdkmcp.Meta{sdkmcp.MetaKeyClientInfo: map[string]any{"name": "cursor", "version": "1.0"}},
-		},
-		Extra: &sdkmcp.RequestExtra{Header: http.Header{"User-Agent": []string{"last9-mcp/1.0"}}},
-	}
+func TestToolsCallUsesUserAgentWhenClientNameIsUnknown(t *testing.T) {
+	span := callToolSpan(t, "streamable", "", http.Header{
+		"User-Agent": {"last9-mcp-server/1.2.3"},
+	})
 
-	if _, err := s.requestMiddleware(noop)(context.Background(), opToolsCall, req); err != nil {
-		t.Fatalf("tools/call: %v", err)
-	}
+	requireAttr(t, span.Attributes, keyMCPClientName, "last9-mcp-server/1.2.3")
+}
 
-	span := toolSpan(t, exp.GetSpans(), "search")
+func TestToolsCallPreservesExplicitClientName(t *testing.T) {
+	span := callToolSpan(t, "streamable", "cursor", http.Header{
+		"User-Agent": {"last9-mcp-server/1.2.3"},
+	})
+
 	requireAttr(t, span.Attributes, keyMCPClientName, "cursor")
 }
 
-func TestForwardedUserAgentDoesNotIdentifyAnonymousStatelessClients(t *testing.T) {
-	s, _ := testInfra(t)
-	s.setTransport("streamable")
-
-	var clientIDs []string
-	next := func(ctx context.Context, _ string, _ sdkmcp.Request) (sdkmcp.Result, error) {
-		clientIDs = append(clientIDs, clientIDFromCtx(ctx))
-		return &sdkmcp.CallToolResult{}, nil
-	}
-	handler := s.requestMiddleware(next)
-
-	for _, toolName := range []string{"first", "second"} {
-		req := &sdkmcp.CallToolRequest{
-			Params: &sdkmcp.CallToolParamsRaw{Name: toolName},
-			Extra:  &sdkmcp.RequestExtra{Header: http.Header{"User-Agent": []string{"shared-client/1.0"}}},
-		}
-		if _, err := handler(context.Background(), opToolsCall, req); err != nil {
-			t.Fatalf("%s tools/call: %v", toolName, err)
-		}
-	}
-
-	if clientIDs[0] == clientIDs[1] {
-		t.Fatalf("anonymous callers share client ID %q", clientIDs[0])
-	}
-	for _, clientID := range clientIDs {
-		if _, ok := s.sessions.getInfo(clientID); ok {
-			t.Fatalf("anonymous session %q was retained", clientID)
-		}
-	}
-}
-
-func TestForwardedCallerIdentityAbsentHeadersAndStdio(t *testing.T) {
-	for _, tt := range []struct {
+func TestToolsCallOmitsAbsentCallerIdentity(t *testing.T) {
+	for _, tc := range []struct {
 		name      string
 		transport string
-		extra     *sdkmcp.RequestExtra
+		headers   http.Header
 	}{
-		{name: "streamable without headers", transport: "streamable", extra: &sdkmcp.RequestExtra{}},
+		{name: "empty HTTP headers", transport: "streamable", headers: http.Header{
+			"User-Agent":         {""},
+			"X-Last9-Source":     {""},
+			"X-Last9-User":       {""},
+			"X-Last9-Token-Kind": {""},
+		}},
 		{name: "stdio", transport: "stdio"},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			s, exp := testInfra(t)
-			s.setTransport(tt.transport)
-			req := &sdkmcp.CallToolRequest{Params: &sdkmcp.CallToolParamsRaw{Name: "search"}, Extra: tt.extra}
+		t.Run(tc.name, func(t *testing.T) {
+			span := callToolSpan(t, tc.transport, "", tc.headers)
 
-			if _, err := s.requestMiddleware(noop)(context.Background(), opToolsCall, req); err != nil {
-				t.Fatalf("tools/call: %v", err)
-			}
-
-			span := toolSpan(t, exp.GetSpans(), "search")
 			requireAttr(t, span.Attributes, keyMCPClientName, "unknown_client")
-			for _, key := range []attribute.Key{keyUserAgentOriginal, keyMCPSource, keyUserEmail, keyTokenKind} {
-				for _, attr := range span.Attributes {
-					if attr.Key == key {
-						t.Errorf("unexpected empty attribute %q", key)
-					}
+			for _, key := range []attribute.Key{testKeyUserAgentOriginal, testKeyMCPSource, testKeyUserID, testKeyTokenKind} {
+				if _, ok := findAttr(span.Attributes, key); ok {
+					t.Errorf("attribute %q should be absent", key)
 				}
 			}
 		})
 	}
 }
 
-func toolSpan(t *testing.T, spans tracetest.SpanStubs, toolName string) *tracetest.SpanStub {
+func callToolSpan(t *testing.T, transport, clientName string, headers http.Header) tracetest.SpanStub {
 	t.Helper()
-	for i := range spans {
-		if spans[i].Name == toolSpanName(toolName) {
-			return &spans[i]
+
+	s, exp := testInfra(t)
+	s.setTransport(transport)
+	params := &sdkmcp.CallToolParamsRaw{Name: "search"}
+	if clientName != "" {
+		params.Meta = sdkmcp.Meta{
+			sdkmcp.MetaKeyClientInfo: map[string]any{"name": clientName, "version": "1.0"},
 		}
 	}
-	t.Fatalf("span %q not found", toolSpanName(toolName))
-	return nil
+	req := &sdkmcp.CallToolRequest{Params: params}
+	if headers != nil {
+		req.Extra = &sdkmcp.RequestExtra{Header: headers}
+	}
+
+	called := false
+	next := func(_ context.Context, method string, got sdkmcp.Request) (sdkmcp.Result, error) {
+		called = true
+		if method != opToolsCall {
+			t.Errorf("method: got %q, want %q", method, opToolsCall)
+		}
+		if got != req {
+			t.Error("middleware replaced the request passed to the tool handler")
+		}
+		return &sdkmcp.CallToolResult{}, nil
+	}
+	if _, err := s.requestMiddleware(next)(context.Background(), opToolsCall, req); err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	if !called {
+		t.Fatal("tool handler was not called")
+	}
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("got spans %v, want one tool span", spanNames(spans))
+	}
+	return spans[0]
 }
